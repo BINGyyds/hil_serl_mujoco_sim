@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot_controllers_mujoco"
+version = "0.1.0"
+description = "Local MuJoCo simulation and control stack for the Franka Panda"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "easyhid",
+  "gymnasium==0.29.1",
+  "imageio>=2.31.1",
+  "matplotlib",
+  "mujoco>=3.0.0",
+  "numpy>=1.24.3",
+  "opencv-python",
+  "pandas",
+  "scipy>=1.11.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robot_controllers_mujoco*"]
+
+[tool.setuptools.package-data]
+robot_controllers_mujoco = [
+  "models/franka_panda/*",
+  "models/franka_panda/assets/*",
+]
