@@ -2,21 +2,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
 
-PANDA_HOME_QPOS: Tuple[float, ...] = (
-    0.0,
-    0.0,
-    0.0,
-    -1.57079,
-    0.0,
-    1.57079,
-    -0.7853,
-)
-
 @dataclass
 class ProjectConfig:
     """集中管理 Panda 仿真与后续真机迁移所需的配置。"""
 
-    CONTROL_MODE: str = "position"
+    CONTROL_MODE: str = "effort"      # "position" 或 "effort"，决定使用位置控制还是力控模式
 
     SIMULATION_DURATION: float = 30.0
     TIMESTEP: Optional[float] = 0.001
@@ -25,18 +15,17 @@ class ProjectConfig:
     VIDEO_FPS: int = 30
     VIDEO_SPEED_MULTIPLIER: float = 1.0
 
-    DATA_LOGGING_INTERVAL: float = 0.001
-    INITIAL_QPOS: Tuple[float, ...] = PANDA_HOME_QPOS
+    DATA_LOGGING_INTERVAL: float = 0.01
 
     MUJOCO_ARM_JOINT_NAMES: Tuple[str, ...] = tuple(f"joint{i + 1}" for i in range(7))
-    MUJOCO_ARM_ACTUATOR_NAMES: Tuple[str, ...] = tuple(f"actuator{i + 1}" for i in range(7))
+    MUJOCO_ARM_ACTUATOR_NAMES: Tuple[str, ...] = tuple(f"joint{i + 1}_ctrl" for i in range(7))
 
     MUJOCO_BASE_SITE_NAME: str = "panda_base_site"
     MUJOCO_END_EFFECTOR_SITE_NAME: str = "attachment_site"
 
     # 力控模式 (effort) 下的PD反馈控制器增益
-    EFFORT_KP_GAINS: Tuple[float, ...] = (100.0, 100.0, 100.0, 100.0, 50.0, 50.0, 20.0) # 比例增益 (Kp)
-    EFFORT_KD_GAINS: Tuple[float, ...] = (20.0, 20.0, 20.0, 20.0, 10.0, 10.0, 5.0)      # 微分增益 (Kd)
+    EFFORT_KP_GAINS: Tuple[float, ...] = (100.0, 200.0, 100.0, 200.0, 200.0, 100.0, 100.0) # 比例增益 (Kp)
+    EFFORT_KD_GAINS: Tuple[float, ...] = (10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0)      # 微分增益 (Kd)
 
     package_root: Path = field(
         default_factory=lambda: Path(__file__).resolve().parents[1],

@@ -60,20 +60,21 @@ class MujocoInterface:
             config.MUJOCO_END_EFFECTOR_SITE_NAME
         ).id
 
-    def set_initial_joint_angles(self, initial_qpos: np.ndarray) -> None:
-        """为 Panda 7 个关节设置初始姿态，并同步位置控制目标。"""
-        if len(initial_qpos) != len(self.arm_qpos_addrs):
-            logger.error(
-                "提供的初始角度数量(%s)与机械臂关节数量(%s)不匹配。",
-                len(initial_qpos),
-                len(self.arm_qpos_addrs),
+    def reset_to_keyframe(self, key_name: str) -> None:
+        """通过 MJCF 中定义的 keyframe 重置仿真状态。"""
+        key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, key_name)
+        if key_id < 0:
+            raise ValueError(
+                f"MuJoCo 模型中不存在名为 '{key_name}' 的 keyframe。"
             )
-            return
 
-        self.data.qpos[self.arm_qpos_addrs] = initial_qpos
-        self.data.ctrl[self.arm_actuator_ids] = initial_qpos
+        mujoco.mj_resetDataKeyframe(self.model, self.data, key_id)
         mujoco.mj_forward(self.model, self.data)
-        logger.info("机械臂初始位置已设置为: %s", initial_qpos)
+        logger.info("机械臂已通过 keyframe '%s' 重置。", key_name)
+
+    def reset_to_home_keyframe(self) -> None:
+        """将机械臂重置到 MJCF 中定义的 home keyframe。"""
+        self.reset_to_keyframe("home")
 
     def get_arm_joint_angles(self) -> np.ndarray:
         """读取机械臂当前关节角度。"""

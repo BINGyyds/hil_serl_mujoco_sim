@@ -94,9 +94,8 @@ class RobotController:
             azimuth=72.91, elevation=-49.89, distance=16.26, lookat=np.array([-0.22, 0.08, 1.66])
         )
 
-        # 5. 在启动 viewer 前先写入初始状态，避免可视化先显示零位再跳到 home。
-        if self.config.INITIAL_QPOS is not None:
-            self.mujoco_interface.set_initial_joint_angles(np.array(self.config.INITIAL_QPOS))
+        # 5. 在启动 viewer 前将机械臂重置到 home 位置。
+        self.mujoco_interface.reset_to_home_keyframe()
 
         # 6. 启动被动查看器（如果需要）
         if self.config.USE_VIEWER: 
@@ -117,11 +116,11 @@ class RobotController:
         if self.config.USE_VIEWER:
             self.mujoco_interface.close_viewer()
 
-        # 3. 保存记录的数据到CSV
-        if self.config.ROBOT_DATA_PATH:
-            self.data_manager.save_data(
-                robot_path=self.config.ROBOT_DATA_PATH
-            )
+        # # 3. 保存记录的数据到CSV
+        # if self.config.ROBOT_DATA_PATH:
+        #     self.data_manager.save_data(
+        #         robot_path=self.config.ROBOT_DATA_PATH
+        #     )
             
         # 4. 绘制数据图表
         self.data_manager.plot_data()
@@ -142,10 +141,10 @@ class RobotController:
             # 获取所有需要记录的数据
             current_q = self.mujoco_interface.get_arm_joint_angles()
             torques = self.mujoco_interface.get_joint_torques()
-            ee_pos_mujoco = self.mujoco_interface.get_end_effector_position()
+            ee_pos = self.mujoco_interface.get_end_effector_position()
             
             # 将数据传递给数据管理器
-            self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos_mujoco)
+            self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos)
             
             self.next_log_time += self.config.DATA_LOGGING_INTERVAL
 
@@ -193,15 +192,12 @@ class RobotController:
         
         self.mujoco_interface.set_control(control_signal)
 
-    def print_robot_info(self, ee_pos_mujoco, ee_pos_model) -> None:
+    def print_robot_info(self, ee_pos) -> None:
         """打印机器人和仿真器的关键信息。"""
-        error_pos = ee_pos_mujoco - ee_pos_model
         logger.info("=" * 60)
         logger.info("机器人信息:")
         
         logger.info(f"时间步长: {self.config.TIMESTEP}s")
-        logger.info(f"末端位置（动力学模型）:{ee_pos_model}")
-        logger.info(f"末端位置（mujoco）:{ee_pos_mujoco}")
-        logger.info(f"误差：{error_pos}")
+        logger.info(f"末端位置:{ee_pos}")
 
         logger.info("=" * 60)

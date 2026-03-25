@@ -42,12 +42,7 @@ class RobotModel:
         rotation = np.asarray(pose.rotation, dtype=np.float64).copy()
         return position, rotation
 
-    def inverse_dynamics(
-        self,
-        q: np.ndarray,
-        v: np.ndarray,
-        a: np.ndarray,
-    ) -> np.ndarray:
+    def inverse_dynamics(self, q: np.ndarray, v: np.ndarray, a: np.ndarray) -> np.ndarray:
         """执行逆动力学计算（RNEA）。"""
         q_array = np.asarray(q, dtype=np.float64)
         v_array = np.asarray(v, dtype=np.float64)
