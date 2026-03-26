@@ -37,7 +37,7 @@ class MujocoInterface:
         mujoco.mjv_defaultCamera(self.camera)
 
     def _get_ids_from_config(self, config: ProjectConfig) -> None:
-        """根据配置缓存 joint、actuator 和 site 的 ID。"""
+        """根据配置缓存 joint、actuator、site 和关键 body 的 ID。"""
         self.arm_joint_names = config.MUJOCO_ARM_JOINT_NAMES
         self.arm_joint_ids = np.array(
             [self.model.joint(name).id for name in self.arm_joint_names], dtype=np.int32
@@ -59,6 +59,7 @@ class MujocoInterface:
         self.end_effector_site_id = self.model.site(
             config.MUJOCO_END_EFFECTOR_SITE_NAME
         ).id
+        self.attachment_body_id = self.model.body("attachment").id
 
     def reset_to_keyframe(self, key_name: str) -> None:
         """通过 MJCF 中定义的 keyframe 重置仿真状态。"""
@@ -91,6 +92,36 @@ class MujocoInterface:
     def get_end_effector_position(self) -> np.ndarray:
         """获取末端执行器 site 的当前世界坐标。"""
         return self.data.site_xpos[self.end_effector_site_id].copy()
+
+    def get_attachment_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        """获取末端 attachment body 的当前世界位置和四元数姿态。
+
+        Returns:
+            position: 世界坐标系下的位置，形状为 (3,)。
+            quaternion: 世界坐标系下的四元数，顺序为 (w, x, y, z)，形状为 (4,)。
+        """
+        position = self.data.xpos[self.attachment_body_id].copy()
+        quaternion = self.data.xquat[self.attachment_body_id].copy()
+        return position, quaternion
+
+    def get_attachment_transform(self) -> np.ndarray:
+        """获取末端 attachment body 的当前世界系 4x4 齐次变换矩阵。"""
+        position, quaternion = self.get_attachment_pose()
+        w, x, y, z = quaternion
+
+        rotation = np.array(
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ],
+            dtype=np.float64,
+        )
+
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = rotation
+        transform[:3, 3] = position
+        return transform
 
     def set_control(self, ctrl: np.ndarray) -> None:
         """设置 Panda 7 个关节的控制目标。"""

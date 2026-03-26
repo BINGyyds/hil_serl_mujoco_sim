@@ -10,7 +10,7 @@ from robot_controllers_mujoco.robot.config import ProjectConfig
 from robot_controllers_mujoco.robot.data_manager import DataManager
 from robot_controllers_mujoco.robot.mujoco_interface import MujocoInterface
 from robot_controllers_mujoco.robot.robot_model import RobotModel
-from robot_controllers_mujoco.robot.trajectory_planner import TrajectoryPlanner
+from robot_controllers_mujoco.robot.robot_motion import RobotMotion
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class RobotController:
         self.config = config
         self.mujoco_interface = MujocoInterface(config)
         self.robot_model = RobotModel(mjcf_path=config.MJCF_PATH, end_effector_frame_name=config.MUJOCO_END_EFFECTOR_SITE_NAME)
-        self.trajectory_planner = TrajectoryPlanner()
+        self.robot_motion = RobotMotion()
         self.data_manager = DataManager()
         
         # --- 内部状态变量 ---
@@ -96,6 +96,13 @@ class RobotController:
 
         # 5. 在启动 viewer 前将机械臂重置到 home 位置。
         self.mujoco_interface.reset_to_home_keyframe()
+        
+        self.ee_tf_home = self.mujoco_interface.get_attachment_transform()
+        self.ee_tf_final = self.ee_tf_home.copy()
+        self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.5])  # 在 z 方向向下平移 0.01 米
+
+        self.q_home = self.mujoco_interface.get_arm_joint_angles()
+        self.q_final = self.robot_model.inverse_kinematics(self.ee_tf_final, q_init=self.q_home)
 
         # 6. 启动被动查看器（如果需要）
         if self.config.USE_VIEWER: 
@@ -155,7 +162,7 @@ class RobotController:
         current_v = self.mujoco_interface.get_arm_joint_velocities()
         
         # 2. 从轨迹规划器获取当前时刻的目标状态
-        target_q, target_v, target_a = self.trajectory_planner.plan_trajectory(current_sim_time, self.config.SIMULATION_DURATION)
+        target_q, target_v, target_a = self.robot_motion.motion_plan_joint(current_sim_time, self.config.SIMULATION_DURATION, self.q_home, self.q_final)
         
         self._apply_control(current_q, current_v, target_q, target_v, target_a)
         
