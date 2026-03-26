@@ -17,10 +17,8 @@ class TrajectoryPlanner:
         tf: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """使用五次多项式规划一条平滑关节轨迹。"""
-        # q0 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        # qf = np.array([0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5])
         q0 = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
-        qf = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
+        qf = np.array([0.5, 0.5, 0.5, -1.57079, 0.5, 1.57079, -0.7853])
         normalized_t = t / tf
 
         qt = np.zeros(7)
