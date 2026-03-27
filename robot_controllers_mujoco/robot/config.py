@@ -9,7 +9,7 @@ class ProjectConfig:
     CONTROL_MODE: str = "effort"      # "position" 或 "effort"，决定使用位置控制还是力控模式
 
     SIMULATION_DURATION: float = 30.0
-    TIMESTEP: Optional[float] = 0.001
+    TIMESTEP: float = 0.001
 
     USE_VIEWER: bool = True
     VIDEO_FPS: int = 30

@@ -99,10 +99,21 @@ class RobotController:
         
         self.ee_tf_home = self.mujoco_interface.get_attachment_transform()
         self.ee_tf_final = self.ee_tf_home.copy()
-        self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.5])  # 在 z 方向向下平移 0.01 米
+        self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.4])  # 在 z 方向向下平移 0.4 米
 
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
         self.q_final = self.robot_model.inverse_kinematics(self.ee_tf_final, q_init=self.q_home)
+
+        self.mujoco_interface.step()
+
+        self.q_traj, self.qd_traj, self.qdd_traj = self.robot_motion.motion_plan_cartesian(
+            robot_model=self.robot_model,
+            tf=self.config.SIMULATION_DURATION,
+            start_transform=self.ee_tf_home,
+            target_transform=self.ee_tf_final,
+            q_init=self.q_home,
+            num_samples=int(self.config.SIMULATION_DURATION / self.config.TIMESTEP) + 1,
+        )
 
         # 6. 启动被动查看器（如果需要）
         if self.config.USE_VIEWER: 
@@ -162,8 +173,10 @@ class RobotController:
         current_v = self.mujoco_interface.get_arm_joint_velocities()
         
         # 2. 从轨迹规划器获取当前时刻的目标状态
-        target_q, target_v, target_a = self.robot_motion.motion_plan_joint(current_sim_time, self.config.SIMULATION_DURATION, self.q_home, self.q_final)
-        
+        target_q, target_v, target_a = self.robot_motion.evaluate_joint_trajectory(
+            current_sim_time
+        )
+
         self._apply_control(current_q, current_v, target_q, target_v, target_a)
         
         # 5. 执行一步物理仿真
@@ -187,7 +200,8 @@ class RobotController:
         elif self.config.CONTROL_MODE == 'effort':
             # 在力矩模式下，使用前馈+反馈（PD）控制律。
             # 1. 动力学前馈 (Inverse Dynamics)
-            tau_ff = self.robot_model.inverse_dynamics(current_q, current_v, target_a)
+            # tau_ff = self.robot_model.inverse_dynamics(current_q, current_v, target_a)
+            tau_ff = self.robot_model.inverse_dynamics(target_q, target_v, target_a)
             # 2. PD反馈
             q_error = target_q - current_q
             v_error = target_v - current_v
