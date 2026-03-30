@@ -238,6 +238,36 @@
     <general class="panda" name="joint7_ctrl" joint="joint7" gainprm="2000" biasprm="0 -2000 -200" forcerange="-12 12"/>
   </actuator>
 
+  <sensor>
+    <jointpos name="joint1_pos_sensor" joint="joint1"/>
+    <jointpos name="joint2_pos_sensor" joint="joint2"/>
+    <jointpos name="joint3_pos_sensor" joint="joint3"/>
+    <jointpos name="joint4_pos_sensor" joint="joint4"/>
+    <jointpos name="joint5_pos_sensor" joint="joint5"/>
+    <jointpos name="joint6_pos_sensor" joint="joint6"/>
+    <jointpos name="joint7_pos_sensor" joint="joint7"/>
+
+    <jointvel name="joint1_vel_sensor" joint="joint1"/>
+    <jointvel name="joint2_vel_sensor" joint="joint2"/>
+    <jointvel name="joint3_vel_sensor" joint="joint3"/>
+    <jointvel name="joint4_vel_sensor" joint="joint4"/>
+    <jointvel name="joint5_vel_sensor" joint="joint5"/>
+    <jointvel name="joint6_vel_sensor" joint="joint6"/>
+    <jointvel name="joint7_vel_sensor" joint="joint7"/>
+
+    <actuatorfrc name="joint1_torque_sensor" actuator="joint1_ctrl"/>
+    <actuatorfrc name="joint2_torque_sensor" actuator="joint2_ctrl"/>
+    <actuatorfrc name="joint3_torque_sensor" actuator="joint3_ctrl"/>
+    <actuatorfrc name="joint4_torque_sensor" actuator="joint4_ctrl"/>
+    <actuatorfrc name="joint5_torque_sensor" actuator="joint5_ctrl"/>
+    <actuatorfrc name="joint6_torque_sensor" actuator="joint6_ctrl"/>
+    <actuatorfrc name="joint7_torque_sensor" actuator="joint7_ctrl"/>
+
+    <framepos name="attachment_site_pos_sensor" objtype="site" objname="attachment_site"/>
+    <framepos name="attachment_body_pos_sensor" objtype="site" objname="attachment_site"/>
+    <framequat name="attachment_body_quat_sensor" objtype="site" objname="attachment_site"/>
+  </sensor>
+
   <contact>
     <!-- <exclude body1="link0" body2="link1"/> -->
   </contact>

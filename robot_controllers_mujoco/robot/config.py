@@ -9,7 +9,7 @@ class ProjectConfig:
     CONTROL_MODE: str = "effort"      # "position" 或 "effort"，决定使用位置控制还是力控模式
 
     SIMULATION_DURATION: float = 20.0
-    TIMESTEP: float = 0.001
+    TIMESTEP: float = 0.002
 
     USE_VIEWER: bool = True
     VIDEO_FPS: int = 30
@@ -19,9 +19,21 @@ class ProjectConfig:
 
     MUJOCO_ARM_JOINT_NAMES: Tuple[str, ...] = tuple(f"joint{i + 1}" for i in range(7))
     MUJOCO_ARM_ACTUATOR_NAMES: Tuple[str, ...] = tuple(f"joint{i + 1}_ctrl" for i in range(7))
+    MUJOCO_ARM_JOINT_POS_SENSOR_NAMES: Tuple[str, ...] = tuple(
+        f"joint{i + 1}_pos_sensor" for i in range(7)
+    )
+    MUJOCO_ARM_JOINT_VEL_SENSOR_NAMES: Tuple[str, ...] = tuple(
+        f"joint{i + 1}_vel_sensor" for i in range(7)
+    )
+    MUJOCO_ARM_JOINT_TORQUE_SENSOR_NAMES: Tuple[str, ...] = tuple(
+        f"joint{i + 1}_torque_sensor" for i in range(7)
+    )
 
     MUJOCO_BASE_SITE_NAME: str = "panda_base_site"
     MUJOCO_END_EFFECTOR_SITE_NAME: str = "attachment_site"
+    MUJOCO_END_EFFECTOR_POS_SENSOR_NAME: str = "attachment_site_pos_sensor"
+    MUJOCO_ATTACHMENT_POS_SENSOR_NAME: str = "attachment_body_pos_sensor"
+    MUJOCO_ATTACHMENT_QUAT_SENSOR_NAME: str = "attachment_body_quat_sensor"
 
     # 力控模式 (effort) 下的PD反馈控制器增益
     EFFORT_KP_GAINS: Tuple[float, ...] = (100.0, 200.0, 100.0, 200.0, 200.0, 100.0, 100.0) # 比例增益 (Kp)

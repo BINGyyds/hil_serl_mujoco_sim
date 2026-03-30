@@ -37,14 +37,8 @@ class MujocoInterface:
         mujoco.mjv_defaultCamera(self.camera)
 
     def _get_ids_from_config(self, config: ProjectConfig) -> None:
-        """根据配置缓存 joint、actuator、site 和关键 body 的 ID。"""
+        """根据配置缓存 actuator、site、body 和 sensor 的索引信息。"""
         self.arm_joint_names = config.MUJOCO_ARM_JOINT_NAMES
-        self.arm_joint_ids = np.array(
-            [self.model.joint(name).id for name in self.arm_joint_names], dtype=np.int32
-        )
-        self.arm_qpos_addrs = self.model.jnt_qposadr[self.arm_joint_ids]
-        self.arm_dof_addrs = self.model.jnt_dofadr[self.arm_joint_ids]
-
         self.arm_actuator_names = config.MUJOCO_ARM_ACTUATOR_NAMES
         self.arm_actuator_ids = np.array(
             [self.model.actuator(name).id for name in self.arm_actuator_names],
@@ -60,6 +54,49 @@ class MujocoInterface:
             config.MUJOCO_END_EFFECTOR_SITE_NAME
         ).id
         self.attachment_body_id = self.model.body("attachment").id
+
+        self.arm_joint_pos_sensor_slices = tuple(
+            self._get_sensor_slice(name, expected_dim=1)
+            for name in config.MUJOCO_ARM_JOINT_POS_SENSOR_NAMES
+        )
+        self.arm_joint_vel_sensor_slices = tuple(
+            self._get_sensor_slice(name, expected_dim=1)
+            for name in config.MUJOCO_ARM_JOINT_VEL_SENSOR_NAMES
+        )
+        self.arm_joint_torque_sensor_slices = tuple(
+            self._get_sensor_slice(name, expected_dim=1)
+            for name in config.MUJOCO_ARM_JOINT_TORQUE_SENSOR_NAMES
+        )
+        self.end_effector_pos_sensor_slice = self._get_sensor_slice(
+            config.MUJOCO_END_EFFECTOR_POS_SENSOR_NAME, expected_dim=3
+        )
+        self.attachment_pos_sensor_slice = self._get_sensor_slice(
+            config.MUJOCO_ATTACHMENT_POS_SENSOR_NAME, expected_dim=3
+        )
+        self.attachment_quat_sensor_slice = self._get_sensor_slice(
+            config.MUJOCO_ATTACHMENT_QUAT_SENSOR_NAME, expected_dim=4
+        )
+
+    def _get_sensor_slice(self, sensor_name: str, expected_dim: int) -> slice:
+        """返回指定 sensor 在 sensordata 中的切片，并检查维度。"""
+        sensor_id = self.model.sensor(sensor_name).id
+        sensor_adr = int(self.model.sensor_adr[sensor_id])
+        sensor_dim = int(self.model.sensor_dim[sensor_id])
+
+        if sensor_dim != expected_dim:
+            raise ValueError(
+                f"Sensor '{sensor_name}' 维度为 {sensor_dim}，预期为 {expected_dim}。"
+            )
+
+        return slice(sensor_adr, sensor_adr + sensor_dim)
+
+    def _read_sensor(self, sensor_slice: slice) -> np.ndarray:
+        """读取一个 sensor 切片对应的数据。"""
+        return np.asarray(self.data.sensordata[sensor_slice], dtype=np.float64).copy()
+
+    def _read_scalar_sensor(self, sensor_slice: slice) -> float:
+        """读取一个标量 sensor。"""
+        return float(self.data.sensordata[sensor_slice][0])
 
     def reset_to_keyframe(self, key_name: str) -> None:
         """通过 MJCF 中定义的 keyframe 重置仿真状态。"""
@@ -79,19 +116,28 @@ class MujocoInterface:
 
     def get_arm_joint_angles(self) -> np.ndarray:
         """读取机械臂当前关节角度。"""
-        return self.data.qpos[self.arm_qpos_addrs].copy()
+        return np.asarray(
+            [self._read_scalar_sensor(sensor_slice) for sensor_slice in self.arm_joint_pos_sensor_slices],
+            dtype=np.float64,
+        )
 
     def get_arm_joint_velocities(self) -> np.ndarray:
         """读取机械臂当前关节速度。"""
-        return self.data.qvel[self.arm_dof_addrs].copy()
+        return np.asarray(
+            [self._read_scalar_sensor(sensor_slice) for sensor_slice in self.arm_joint_vel_sensor_slices],
+            dtype=np.float64,
+        )
 
     def get_joint_torques(self) -> np.ndarray:
         """读取 Panda 7 个关节执行器当前输出。"""
-        return self.data.actuator_force[self.arm_actuator_ids].copy()
+        return np.asarray(
+            [self._read_scalar_sensor(sensor_slice) for sensor_slice in self.arm_joint_torque_sensor_slices],
+            dtype=np.float64,
+        )
 
     def get_end_effector_position(self) -> np.ndarray:
         """获取末端执行器 site 的当前世界坐标。"""
-        return self.data.site_xpos[self.end_effector_site_id].copy()
+        return self._read_sensor(self.end_effector_pos_sensor_slice)
 
     def get_attachment_pose(self) -> Tuple[np.ndarray, np.ndarray]:
         """获取末端 attachment body 的当前世界位置和四元数姿态。
@@ -100,8 +146,8 @@ class MujocoInterface:
             position: 世界坐标系下的位置，形状为 (3,)。
             quaternion: 世界坐标系下的四元数，顺序为 (w, x, y, z)，形状为 (4,)。
         """
-        position = self.data.xpos[self.attachment_body_id].copy()
-        quaternion = self.data.xquat[self.attachment_body_id].copy()
+        position = self._read_sensor(self.attachment_pos_sensor_slice)
+        quaternion = self._read_sensor(self.attachment_quat_sensor_slice)
         return position, quaternion
 
     def get_attachment_transform(self) -> np.ndarray:
