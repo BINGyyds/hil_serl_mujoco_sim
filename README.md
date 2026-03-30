@@ -47,6 +47,29 @@ conda activate robot_controllers_mujoco
 
 如果需要使用 `robot_controllers_mujoco.robot.*` 中依赖 Pinocchio 的控制器模块，请额外手动安装 Pinocchio。
 
+如果你需要 SpaceMouse：
+
+- macOS 侧需要先有 Homebrew 的 `hidapi`
+- Apple Silicon macOS 建议直接使用 `bglopez/python-easyhid` 这个 patched `easyhid` fork
+- 现在仓库内置了 macOS `hidapi` 预加载逻辑，优先尝试自动加载 `/opt/homebrew` 或 `/usr/local` 下的 `libhidapi.dylib`
+- 如果装了 3Dconnexion 官方驱动，运行前需要退出 `3DconnexionHelper`
+- 如果 ARM 原生环境仍然打不开设备，再考虑 Rosetta 2 / x86_64 Python 作为兜底方案
+
+如果仍然失败，先确认：
+
+```bash
+brew --prefix hidapi
+ls /opt/homebrew/opt/hidapi/lib/libhidapi.dylib
+python -c "from easyhid import Enumeration; print('easyhid backend ok')"
+pgrep -lf '3Dconnexion|3Dx|3dconnexion'
+```
+
+临时绕过 SpaceMouse 做调试：
+
+```bash
+mjpython -m robot_controllers_mujoco.robot.main --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse
+```
+
 ## 基本验证
 
 ```bash

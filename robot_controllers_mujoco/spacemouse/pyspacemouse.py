@@ -1,3 +1,39 @@
+import ctypes
+import os
+import platform
+from pathlib import Path
+
+
+def _preload_hidapi_for_macos() -> None:
+    """Preload hidapi on macOS so easyhid/cffi can resolve symbols reliably."""
+    if platform.system() != "Darwin":
+        return
+
+    candidates = (
+        Path("/opt/homebrew/opt/hidapi/lib/libhidapi.dylib"),
+        Path("/opt/homebrew/opt/hidapi/lib/libhidapi.0.dylib"),
+        Path("/opt/homebrew/lib/libhidapi.dylib"),
+        Path("/opt/homebrew/lib/libhidapi.0.dylib"),
+        Path("/usr/local/opt/hidapi/lib/libhidapi.dylib"),
+        Path("/usr/local/opt/hidapi/lib/libhidapi.0.dylib"),
+        Path("/usr/local/lib/libhidapi.dylib"),
+        Path("/usr/local/lib/libhidapi.0.dylib"),
+    )
+
+    rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            ctypes.CDLL(str(candidate), mode=rtld_global)
+            os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", str(candidate.parent))
+            return
+        except OSError:
+            continue
+
+
+_preload_hidapi_for_macos()
+
 from easyhid import Enumeration, HIDException
 from collections import namedtuple
 import timeit
@@ -1049,4 +1085,3 @@ if __name__ == "__main__":
 
     while True:
         state = dev.read()
-

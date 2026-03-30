@@ -13,6 +13,10 @@ if [[ "$(uname)" != "Darwin" ]]; then
     error "setup_env_mac.sh 仅适用于 macOS。"
 fi
 
+if ! command -v brew &>/dev/null; then
+    error "未找到 Homebrew。请先安装 Homebrew，再运行本脚本。"
+fi
+
 if command -v conda &>/dev/null; then
     CONDA_BIN="$(command -v conda)"
 elif [ -f "$HOME/miniconda3/bin/conda" ]; then
@@ -36,11 +40,22 @@ fi
 
 conda activate "$ENV_NAME"
 
+if brew list hidapi &>/dev/null; then
+    info "检测到 Homebrew hidapi，跳过安装。"
+else
+    info "通过 Homebrew 安装 hidapi"
+    brew install hidapi
+fi
+
 info "升级 pip / setuptools / wheel"
 pip install --upgrade pip setuptools wheel
 
 info "安装 robot_controllers_mujoco"
 pip install -e "$PROJECT_DIR"
+
+info "切换到 Apple Silicon 兼容的 easyhid fork"
+pip uninstall -y easyhid-ng >/dev/null 2>&1 || true
+pip install --force-reinstall git+https://github.com/bglopez/python-easyhid.git
 
 info "安装可选的本地调试依赖"
 pip install stable-baselines3 || warn "stable-baselines3 安装失败，可忽略。"

@@ -4,6 +4,7 @@ import logging
 from typing import Any, List, Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from robot_controllers_mujoco.robot.async_writer import AsyncVideoWriter
 from robot_controllers_mujoco.robot.config import ProjectConfig
@@ -38,6 +39,8 @@ class RobotController:
         self.filtered_spacemouse_action = np.zeros(6, dtype=np.float64)
         self.reset_button_pressed = False
         self.q_home = np.zeros(7, dtype=np.float64)
+        self.teleop_target_transform: Optional[np.ndarray] = None
+        self.teleop_posture_reference = np.zeros(7, dtype=np.float64)
         
         # --- 内部状态变量 ---
         self.video_writers: List[AsyncVideoWriter] = []
@@ -172,6 +175,8 @@ class RobotController:
 
         self.filtered_spacemouse_action[:] = 0.0
         self.reset_button_pressed = False
+        self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
+        self.teleop_posture_reference = self.q_home.copy()
 
     def _cleanup_simulation(self):
         """
@@ -255,6 +260,8 @@ class RobotController:
         if reset_pressed:
             if not self.reset_button_pressed:
                 self.mujoco_interface.reset_to_home_keyframe()
+                self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
+                self.teleop_posture_reference = self.mujoco_interface.get_arm_joint_angles()
                 self.filtered_spacemouse_action[:] = 0.0
             self.reset_button_pressed = True
             return np.zeros_like(current_q)
@@ -262,16 +269,25 @@ class RobotController:
         self.reset_button_pressed = reset_pressed
 
         twist_command = self._filter_spacemouse_action(np.asarray(action[:6], dtype=np.float64))
-        if not np.any(twist_command):
-            return np.zeros_like(current_q)
+        if self.teleop_target_transform is None:
+            self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
+        self._integrate_teleop_target_transform(twist_command)
+
+        current_transform = self.mujoco_interface.get_attachment_transform()
+        pose_error = self._compute_local_pose_error(
+            current_transform=current_transform,
+            target_transform=self.teleop_target_transform,
+        )
+        pose_error[:3] *= self.config.TELEOP_POSITION_KP
+        pose_error[3:] *= self.config.TELEOP_ROTATION_KP
 
         jacobian = self.robot_model.jacobian(current_q)
         damping_matrix = self.config.IK_DAMPING * np.eye(6, dtype=np.float64)
         jjt = jacobian @ jacobian.T
         jacobian_pinv = jacobian.T @ np.linalg.solve(jjt + damping_matrix, np.eye(6))
-        qdot_task = jacobian_pinv @ twist_command
+        qdot_task = jacobian_pinv @ pose_error
 
-        qdot_null = self.config.NULLSPACE_GAIN * (self.q_home - current_q)
+        qdot_null = self.config.NULLSPACE_GAIN * (self.teleop_posture_reference - current_q)
         nullspace_projector = np.eye(jacobian.shape[1], dtype=np.float64) - jacobian_pinv @ jacobian
         qdot_command = qdot_task + nullspace_projector @ qdot_null
         qdot_command = self._apply_joint_limit_guard(current_q, qdot_command)
@@ -303,6 +319,40 @@ class RobotController:
             alpha * scaled_action + (1.0 - alpha) * self.filtered_spacemouse_action
         )
         return self.filtered_spacemouse_action.copy()
+
+    def _integrate_teleop_target_transform(self, twist_command: np.ndarray) -> None:
+        """将 SpaceMouse 增量命令积分到末端参考位姿上。"""
+        if self.teleop_target_transform is None:
+            raise RuntimeError("teleop 参考位姿尚未初始化。")
+
+        dt = float(self.config.TIMESTEP)
+        delta_translation_local = twist_command[:3] * dt
+        delta_rotation_local = twist_command[3:] * dt
+
+        target_transform = self.teleop_target_transform.copy()
+        target_rotation = target_transform[:3, :3]
+        target_position = target_transform[:3, 3]
+
+        target_position = target_position + target_rotation @ delta_translation_local
+        target_rotation = target_rotation @ Rotation.from_rotvec(delta_rotation_local).as_matrix()
+
+        self.teleop_target_transform[:3, :3] = target_rotation
+        self.teleop_target_transform[:3, 3] = target_position
+
+    def _compute_local_pose_error(
+        self,
+        current_transform: np.ndarray,
+        target_transform: np.ndarray,
+    ) -> np.ndarray:
+        """计算在当前末端局部坐标系下的 6D 位姿误差。"""
+        current_rotation = current_transform[:3, :3]
+        target_rotation = target_transform[:3, :3]
+        current_position = current_transform[:3, 3]
+        target_position = target_transform[:3, 3]
+
+        position_error_local = current_rotation.T @ (target_position - current_position)
+        rotation_error_local = Rotation.from_matrix(current_rotation.T @ target_rotation).as_rotvec()
+        return np.concatenate([position_error_local, rotation_error_local])
 
     def _apply_joint_limit_guard(
         self,

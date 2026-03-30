@@ -10,7 +10,7 @@ class ProjectConfig:
     CONTROL_MODE: str = "effort"      # "position"、"effort" 或 "velocity"
     ALLOW_MISSING_SPACEMOUSE: bool = False
 
-    SIMULATION_DURATION: float = 20.0
+    SIMULATION_DURATION: float = 50.0
     TIMESTEP: float = 0.002
 
     USE_VIEWER: bool = True
@@ -41,6 +41,8 @@ class ProjectConfig:
     SPACEMOUSE_TRANSLATION_SCALE: float = 0.20
     SPACEMOUSE_ROTATION_SCALE: float = 0.80
     SPACEMOUSE_FILTER_ALPHA: float = 0.25
+    TELEOP_POSITION_KP: float = 8.0
+    TELEOP_ROTATION_KP: float = 6.0
     JOINT_VELOCITY_LIMITS: Tuple[float, ...] = (
         2.175,
         2.175,
