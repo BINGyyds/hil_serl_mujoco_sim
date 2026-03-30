@@ -38,6 +38,23 @@ def main() -> None:
         action='store_true',
         help='禁用实时可视化界面，以无头模式运行仿真。'
     )
+    parser.add_argument(
+        '--input-mode',
+        choices=('planned', 'spacemouse'),
+        default=None,
+        help='输入模式：planned 使用内置轨迹规划，spacemouse 使用 6D SpaceMouse 实时控制。',
+    )
+    parser.add_argument(
+        '--control-mode',
+        choices=('position', 'effort', 'velocity'),
+        default=None,
+        help='底层控制模式。',
+    )
+    parser.add_argument(
+        '--allow-missing-spacemouse',
+        action='store_true',
+        help='当 SpaceMouse 未连接或本机 HID 后端不可用时，回退到零输入 mock teleop 模式。',
+    )
 
     # 解析传入的命令行参数
     args = parser.parse_args()
@@ -49,6 +66,9 @@ def main() -> None:
         # 这是整个项目配置的唯一来源
         config = ProjectConfig(
             USE_VIEWER=not args.no_viewer,
+            INPUT_MODE=args.input_mode if args.input_mode is not None else ProjectConfig.INPUT_MODE,
+            CONTROL_MODE=args.control_mode if args.control_mode is not None else ProjectConfig.CONTROL_MODE,
+            ALLOW_MISSING_SPACEMOUSE=args.allow_missing_spacemouse,
         )
         
         # 3. 创建控制器实例并传入配置对象

@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 @dataclass
 class ProjectConfig:
     """集中管理 Panda 仿真与后续真机迁移所需的配置。"""
 
-    CONTROL_MODE: str = "effort"      # "position" 或 "effort"，决定使用位置控制还是力控模式
+    INPUT_MODE: str = "planned"       # "planned" 或 "spacemouse"
+    CONTROL_MODE: str = "effort"      # "position"、"effort" 或 "velocity"
+    ALLOW_MISSING_SPACEMOUSE: bool = False
 
     SIMULATION_DURATION: float = 20.0
     TIMESTEP: float = 0.002
@@ -35,6 +37,23 @@ class ProjectConfig:
     MUJOCO_ATTACHMENT_POS_SENSOR_NAME: str = "attachment_body_pos_sensor"
     MUJOCO_ATTACHMENT_QUAT_SENSOR_NAME: str = "attachment_body_quat_sensor"
 
+    SPACEMOUSE_DEADZONE: float = 0.05
+    SPACEMOUSE_TRANSLATION_SCALE: float = 0.20
+    SPACEMOUSE_ROTATION_SCALE: float = 0.80
+    SPACEMOUSE_FILTER_ALPHA: float = 0.25
+    JOINT_VELOCITY_LIMITS: Tuple[float, ...] = (
+        2.175,
+        2.175,
+        2.175,
+        2.175,
+        2.610,
+        2.610,
+        2.610,
+    )
+    JOINT_LIMIT_MARGIN: float = 0.05
+    IK_DAMPING: float = 1e-4
+    NULLSPACE_GAIN: float = 0.15
+
     # 力控模式 (effort) 下的PD反馈控制器增益
     EFFORT_KP_GAINS: Tuple[float, ...] = (100.0, 200.0, 100.0, 200.0, 200.0, 100.0, 100.0) # 比例增益 (Kp)
     EFFORT_KD_GAINS: Tuple[float, ...] = (10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0)      # 微分增益 (Kd)
@@ -60,12 +79,26 @@ class ProjectConfig:
         self.output_root = self.repo_root / "output"
         franka_mjcf_root = self.model_root / "franka_panda"
 
+        if self.INPUT_MODE not in {"planned", "spacemouse"}:
+            raise ValueError("INPUT_MODE 仅支持 'planned' 或 'spacemouse'。")
+
         if self.CONTROL_MODE == "position":
             self.MJCF_PATH = franka_mjcf_root / "panda_nohand_position.xml"
         elif self.CONTROL_MODE == "effort":
             self.MJCF_PATH = franka_mjcf_root / "panda_nohand_effort.xml"
+        elif self.CONTROL_MODE == "velocity":
+            self.MJCF_PATH = franka_mjcf_root / "panda_nohand_velocity.xml"
         else:
-            raise ValueError("CONTROL_MODE 仅支持 'position' 或 'effort'。")
+            raise ValueError("CONTROL_MODE 仅支持 'position'、'effort' 或 'velocity'。")
+
+        if self.INPUT_MODE == "spacemouse" and self.CONTROL_MODE != "velocity":
+            raise ValueError(
+                "SpaceMouse teleop 仅支持 CONTROL_MODE='velocity'。"
+            )
+        if self.INPUT_MODE == "planned" and self.CONTROL_MODE == "velocity":
+            raise ValueError(
+                "planned 模式当前仅支持 CONTROL_MODE='position' 或 'effort'。"
+            )
 
         self.MAIN_VIDEO_PATH = self.output_root / "videos" / "main_simulation.mp4"
         self.ROBOT_DATA_PATH = self.output_root / "docs" / "robot_data.csv"

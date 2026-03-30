@@ -1,12 +1,17 @@
 # async_writer.py
 
-import threading
-import queue
-import cv2
 import logging
-import numpy as np
+import queue
+import threading
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Any, Optional, Tuple
+
+import numpy as np
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - depends on local OpenCV install
+    cv2 = None
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,9 @@ class AsyncVideoWriter:
             frame_size (Tuple[int, int]): 视频帧的尺寸 (宽度, 高度)。
             speed_multiplier (float): 视频播放的倍速。
         """
+        if cv2 is None:
+            raise RuntimeError("未安装 OpenCV(cv2)，无法启用视频写入。")
+
         # **倍速功能实现**: 视频的最终播放帧率是 采样率 * 倍速
         output_fps = base_fps * speed_multiplier
         logger.info(f"视频 '{video_path.name}' 配置: [采样率: {base_fps} FPS], "
@@ -39,7 +47,7 @@ class AsyncVideoWriter:
         self.queue: queue.Queue[Optional[np.ndarray]] = queue.Queue(maxsize=base_fps * 10) # 增加到10秒缓冲区
         
         video_path.parent.mkdir(parents=True, exist_ok=True)
-        self.video_writer = cv2.VideoWriter(
+        self.video_writer: Any = cv2.VideoWriter(
             str(video_path),
             cv2.VideoWriter_fourcc(*'mp4v'),
             output_fps, # <-- 使用计算出的新帧率
@@ -93,6 +101,9 @@ class AsyncImageWriter:
     QueueItem = Optional[Tuple[Path, np.ndarray]]
 
     def __init__(self):
+        if cv2 is None:
+            raise RuntimeError("未安装 OpenCV(cv2)，无法启用图片写入。")
+
         self.queue: queue.Queue[AsyncImageWriter.QueueItem] = queue.Queue(maxsize=20)
         self.thread = threading.Thread(target=self._write_loop, daemon=True)
         self.is_running = False

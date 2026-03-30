@@ -25,6 +25,14 @@ class RobotModel:
             self.end_effector_frame_id = int(
                 self.model.getFrameId(end_effector_frame_name)
             )
+            self.lower_position_limits = np.asarray(
+                self.model.lowerPositionLimit,
+                dtype=np.float64,
+            ).copy()
+            self.upper_position_limits = np.asarray(
+                self.model.upperPositionLimit,
+                dtype=np.float64,
+            ).copy()
             logger.info("Pinocchio 动力学模型构建成功: %s", self.mjcf_path)
         except Exception:
             logger.exception("从 MJCF 构建 Pinocchio 模型失败。")
@@ -41,6 +49,20 @@ class RobotModel:
         position = np.asarray(pose.translation, dtype=np.float64).copy()
         rotation = np.asarray(pose.rotation, dtype=np.float64).copy()
         return position, rotation
+
+    def jacobian(self, q: np.ndarray) -> np.ndarray:
+        """返回末端在 LOCAL 坐标系下的 6x7 Jacobian。"""
+        q_array = np.asarray(q, dtype=np.float64)
+        pin.forwardKinematics(self.model, self.data, q_array)
+        pin.updateFramePlacements(self.model, self.data)
+        jacobian = pin.computeFrameJacobian(
+            self.model,
+            self.data,
+            q_array,
+            self.end_effector_frame_id,
+            pin.ReferenceFrame.LOCAL,
+        )
+        return np.asarray(jacobian, dtype=np.float64).copy()
 
     def inverse_kinematics(
         self,

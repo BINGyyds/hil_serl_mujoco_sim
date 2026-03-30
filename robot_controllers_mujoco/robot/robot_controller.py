@@ -1,7 +1,7 @@
 # robot_controller.py
 
 import logging
-from typing import List
+from typing import Any, List, Optional
 
 import numpy as np
 
@@ -34,6 +34,10 @@ class RobotController:
         self.robot_model = RobotModel(mjcf_path=config.MJCF_PATH, end_effector_frame_name=config.MUJOCO_END_EFFECTOR_SITE_NAME)
         self.robot_motion = RobotMotion()
         self.data_manager = DataManager()
+        self.spacemouse: Optional[Any] = None
+        self.filtered_spacemouse_action = np.zeros(6, dtype=np.float64)
+        self.reset_button_pressed = False
+        self.q_home = np.zeros(7, dtype=np.float64)
         
         # --- 内部状态变量 ---
         self.video_writers: List[AsyncVideoWriter] = []
@@ -47,23 +51,28 @@ class RobotController:
         运行主仿真循环。
         该循环以物理仿真的最高可能速度运行，并根据需要处理渲染、数据记录和控制逻辑。
         """
-        self._setup_simulation()
-        logger.info("主仿真循环开始...")
+        setup_started = False
+        try:
+            self._setup_simulation()
+            setup_started = True
+            logger.info("主仿真循环开始...")
 
-        while self.mujoco_interface.data.time < self.config.SIMULATION_DURATION:
-            current_sim_time = self.mujoco_interface.data.time
+            while self.mujoco_interface.data.time < self.config.SIMULATION_DURATION:
+                current_sim_time = self.mujoco_interface.data.time
 
-            # 模块化处理循环内的各项任务
-            # self._handle_rendering(current_sim_time)
-            self._handle_data_logging(current_sim_time)
-            self._execute_simulation_step(current_sim_time)
-            
-            # 与查看器同步（如果开启）
-            if self.config.USE_VIEWER: 
-                self.mujoco_interface.sync_viewer()
+                # 模块化处理循环内的各项任务
+                # self._handle_rendering(current_sim_time)
+                self._handle_data_logging(current_sim_time)
+                self._execute_simulation_step(current_sim_time)
+                
+                # 与查看器同步（如果开启）
+                if self.config.USE_VIEWER: 
+                    self.mujoco_interface.sync_viewer()
 
-        logger.info("主仿真循环结束。")
-        self._cleanup_simulation()
+            logger.info("主仿真循环结束。")
+        finally:
+            if setup_started or self.video_writers or self.spacemouse is not None:
+                self._cleanup_simulation()
 
     def _setup_simulation(self):
         """
@@ -71,18 +80,6 @@ class RobotController:
         包括初始化渲染器、视频写入器、数据记录计时器和查看器。
         """
         logger.info("正在准备仿真环境...")
-        # 1. 初始化离线渲染器以确定帧尺寸
-        renderer = self.mujoco_interface.setup_renderer(width=1280, height=720)
-        frame_size = (renderer.width, renderer.height)
-        
-        # 2. 根据配置创建并启动所有异步视频写入器
-        self.video_writers = []
-        if self.config.MAIN_VIDEO_PATH:
-            main_writer = AsyncVideoWriter(self.config.MAIN_VIDEO_PATH, self.config.VIDEO_FPS, frame_size, self.config.VIDEO_SPEED_MULTIPLIER)
-            self.video_writers.append(main_writer)
-
-        for writer in self.video_writers:
-            writer.start()
 
         # 3. 初始化仿真循环内的计时器
         self.video_frame_duration = 1.0 / self.config.VIDEO_FPS
@@ -96,14 +93,54 @@ class RobotController:
 
         # 5. 在启动 viewer 前将机械臂重置到 home 位置。
         self.mujoco_interface.reset_to_home_keyframe()
-        
+        self.q_home = self.mujoco_interface.get_arm_joint_angles()
+        if self.config.INPUT_MODE == "planned":
+            self._initialize_planned_mode()
+        elif self.config.INPUT_MODE == "spacemouse":
+            self._initialize_spacemouse_mode()
+        else:
+            raise ValueError(f"不支持的输入模式: {self.config.INPUT_MODE}")
+
+        # 6. 初始化渲染器和视频写入器
+        frame_size = None
+        if self.config.MAIN_VIDEO_PATH:
+            try:
+                renderer = self.mujoco_interface.setup_renderer(width=1280, height=720)
+                frame_size = (renderer.width, renderer.height)
+            except Exception:
+                logger.exception("离线渲染器初始化失败，已禁用视频录制。")
+                frame_size = None
+
+        self.video_writers = []
+        if self.config.MAIN_VIDEO_PATH and frame_size is not None:
+            try:
+                main_writer = AsyncVideoWriter(
+                    self.config.MAIN_VIDEO_PATH,
+                    self.config.VIDEO_FPS,
+                    frame_size,
+                    self.config.VIDEO_SPEED_MULTIPLIER,
+                )
+                self.video_writers.append(main_writer)
+            except Exception:
+                logger.exception("视频写入器初始化失败，已禁用视频录制。")
+
+        for writer in self.video_writers:
+            writer.start()
+
+        # 7. 启动被动查看器（如果需要）
+        if self.config.USE_VIEWER: 
+            self.mujoco_interface.launch_viewer()
+
+    def _initialize_planned_mode(self) -> None:
+        """初始化离线规划模式。"""
         self.ee_tf_home = self.mujoco_interface.get_attachment_transform()
         self.ee_tf_final = self.ee_tf_home.copy()
-        # self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.55])  # 在 z 方向向下平移 0.55 米
-        self.ee_tf_final[2, 3] = 0.1  # z 方向目标高度为 0.1 米
+        self.ee_tf_final[2, 3] = 0.1
 
-        self.q_home = self.mujoco_interface.get_arm_joint_angles()
-        self.q_final = self.robot_model.inverse_kinematics(self.ee_tf_final, q_init=self.q_home)
+        self.q_final = self.robot_model.inverse_kinematics(
+            self.ee_tf_final,
+            q_init=self.q_home,
+        )
 
         self.mujoco_interface.step()
 
@@ -116,9 +153,25 @@ class RobotController:
             num_samples=int(self.config.SIMULATION_DURATION / self.config.TIMESTEP) + 1,
         )
 
-        # 6. 启动被动查看器（如果需要）
-        if self.config.USE_VIEWER: 
-            self.mujoco_interface.launch_viewer()
+    def _initialize_spacemouse_mode(self) -> None:
+        """初始化 SpaceMouse teleop 模式。"""
+        from robot_controllers_mujoco.spacemouse.spacemouse_expert import (
+            SpaceMouseExpert,
+            ZeroSpaceMouseExpert,
+        )
+
+        try:
+            self.spacemouse = SpaceMouseExpert()
+            logger.info("SpaceMouse teleop 模式已启用。")
+        except RuntimeError as exc:
+            if not self.config.ALLOW_MISSING_SPACEMOUSE:
+                raise
+
+            self.spacemouse = ZeroSpaceMouseExpert()
+            logger.warning("SpaceMouse 不可用，已回退到零输入 teleop 模式: %s", exc)
+
+        self.filtered_spacemouse_action[:] = 0.0
+        self.reset_button_pressed = False
 
     def _cleanup_simulation(self):
         """
@@ -135,6 +188,10 @@ class RobotController:
         if self.config.USE_VIEWER:
             self.mujoco_interface.close_viewer()
 
+        if self.spacemouse is not None:
+            self.spacemouse.close()
+            self.spacemouse = None
+
         # 3. 保存记录的数据到CSV
         if self.config.ROBOT_DATA_PATH:
             self.data_manager.save_data(
@@ -146,11 +203,10 @@ class RobotController:
 
     def _handle_rendering(self, current_sim_time: float):
         """在仿真循环中处理视频帧的渲染和分发。"""
-        if current_sim_time >= self.next_frame_sim_time:
+        if current_sim_time >= self.next_frame_sim_time and self.video_writers:
             # 渲染主摄像头画面
             main_frame = self.mujoco_interface.render_frame(camera=self.mujoco_interface.camera)
-            if self.config.MAIN_VIDEO_PATH:
-                self.video_writers[0].add_frame(main_frame)
+            self.video_writers[0].add_frame(main_frame)
             # 更新下一个渲染时间点
             self.next_frame_sim_time += self.video_frame_duration
 
@@ -177,15 +233,93 @@ class RobotController:
         current_q = self.mujoco_interface.get_arm_joint_angles()
         current_v = self.mujoco_interface.get_arm_joint_velocities()
         
-        # 2. 从轨迹规划器获取当前时刻的目标状态
-        target_q, target_v, target_a = self.robot_motion.evaluate_joint_trajectory(
-            current_sim_time
-        )
-
-        self._apply_control(current_q, current_v, target_q, target_v, target_a)
+        if self.config.INPUT_MODE == "planned":
+            target_q, target_v, target_a = self.robot_motion.evaluate_joint_trajectory(current_sim_time)
+            self._apply_control(current_q, current_v, target_q, target_v, target_a)
+        elif self.config.INPUT_MODE == "spacemouse":
+            qdot_command = self._compute_spacemouse_velocity_command(current_q)
+            self.mujoco_interface.set_control(qdot_command)
+        else:
+            raise ValueError(f"不支持的输入模式: {self.config.INPUT_MODE}")
         
         # 3. 执行一步物理仿真
         self.mujoco_interface.step()
+
+    def _compute_spacemouse_velocity_command(self, current_q: np.ndarray) -> np.ndarray:
+        """读取 SpaceMouse 输入并转换为关节速度命令。"""
+        if self.spacemouse is None:
+            raise RuntimeError("SpaceMouse 尚未初始化。")
+
+        action, buttons = self.spacemouse.get_action()
+        reset_pressed = bool(buttons[0]) if buttons else False
+        if reset_pressed:
+            if not self.reset_button_pressed:
+                self.mujoco_interface.reset_to_home_keyframe()
+                self.filtered_spacemouse_action[:] = 0.0
+            self.reset_button_pressed = True
+            return np.zeros_like(current_q)
+
+        self.reset_button_pressed = reset_pressed
+
+        twist_command = self._filter_spacemouse_action(np.asarray(action[:6], dtype=np.float64))
+        if not np.any(twist_command):
+            return np.zeros_like(current_q)
+
+        jacobian = self.robot_model.jacobian(current_q)
+        damping_matrix = self.config.IK_DAMPING * np.eye(6, dtype=np.float64)
+        jjt = jacobian @ jacobian.T
+        jacobian_pinv = jacobian.T @ np.linalg.solve(jjt + damping_matrix, np.eye(6))
+        qdot_task = jacobian_pinv @ twist_command
+
+        qdot_null = self.config.NULLSPACE_GAIN * (self.q_home - current_q)
+        nullspace_projector = np.eye(jacobian.shape[1], dtype=np.float64) - jacobian_pinv @ jacobian
+        qdot_command = qdot_task + nullspace_projector @ qdot_null
+        qdot_command = self._apply_joint_limit_guard(current_q, qdot_command)
+
+        joint_velocity_limits = np.asarray(
+            self.config.JOINT_VELOCITY_LIMITS,
+            dtype=np.float64,
+        )
+        qdot_command = np.clip(qdot_command, -joint_velocity_limits, joint_velocity_limits)
+        return qdot_command
+
+    def _filter_spacemouse_action(self, raw_action: np.ndarray) -> np.ndarray:
+        """对 SpaceMouse 输入做死区、缩放和低通滤波。"""
+        if raw_action.shape != (6,):
+            raise ValueError(f"SpaceMouse 输入维度错误，期望 (6,)，实际 {raw_action.shape}")
+
+        action = raw_action.copy()
+        action[np.abs(action) < self.config.SPACEMOUSE_DEADZONE] = 0.0
+        if not np.any(action):
+            self.filtered_spacemouse_action[:] = 0.0
+            return np.zeros(6, dtype=np.float64)
+
+        scaled_action = action.copy()
+        scaled_action[:3] *= self.config.SPACEMOUSE_TRANSLATION_SCALE
+        scaled_action[3:] *= self.config.SPACEMOUSE_ROTATION_SCALE
+
+        alpha = float(np.clip(self.config.SPACEMOUSE_FILTER_ALPHA, 0.0, 1.0))
+        self.filtered_spacemouse_action = (
+            alpha * scaled_action + (1.0 - alpha) * self.filtered_spacemouse_action
+        )
+        return self.filtered_spacemouse_action.copy()
+
+    def _apply_joint_limit_guard(
+        self,
+        current_q: np.ndarray,
+        qdot_command: np.ndarray,
+    ) -> np.ndarray:
+        """在接近关节限位时抑制继续向外的速度命令。"""
+        qdot_safe = np.asarray(qdot_command, dtype=np.float64).copy()
+        lower = self.robot_model.lower_position_limits
+        upper = self.robot_model.upper_position_limits
+        finite_mask = np.isfinite(lower) & np.isfinite(upper)
+        margin = self.config.JOINT_LIMIT_MARGIN
+
+        lower_block = finite_mask & (current_q <= lower + margin) & (qdot_safe < 0.0)
+        upper_block = finite_mask & (current_q >= upper - margin) & (qdot_safe > 0.0)
+        qdot_safe[lower_block | upper_block] = 0.0
+        return qdot_safe
 
     def _apply_control(self, current_q: np.ndarray, current_v: np.ndarray, target_q: np.ndarray, target_v: np.ndarray, target_a: np.ndarray) -> None:
         """

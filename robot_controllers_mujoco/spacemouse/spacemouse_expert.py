@@ -2,7 +2,15 @@ import multiprocessing
 import numpy as np
 from typing import Tuple
 
-from . import pyspacemouse
+
+class ZeroSpaceMouseExpert:
+    """用于无设备调试的零输入 SpaceMouse 替身。"""
+
+    def get_action(self) -> Tuple[np.ndarray, list]:
+        return np.zeros(6, dtype=np.float64), [0, 0]
+
+    def close(self) -> None:
+        pass
 
 
 class SpaceMouseExpert:
@@ -13,7 +21,32 @@ class SpaceMouseExpert:
     """
 
     def __init__(self):
-        pyspacemouse.open()
+        try:
+            from . import pyspacemouse
+        except ModuleNotFoundError as exc:
+            if exc.name == "easyhid":
+                raise RuntimeError(
+                    "SpaceMouse 依赖缺失: 未安装 `easyhid`。"
+                    " 请在当前环境中执行 `pip install easyhid`，并确认系统已安装 HID 相关库后重试。"
+                ) from exc
+            raise
+
+        self.pyspacemouse = pyspacemouse
+        try:
+            device = pyspacemouse.open()
+        except Exception as exc:
+            message = str(exc)
+            if "HID API is probably not installed" in message or "hid_enumerate" in message:
+                raise RuntimeError(
+                    "SpaceMouse HID 后端不可用: `easyhid` 已安装，但系统 `hidapi` 动态库未正确安装"
+                    " 或当前环境无法找到它。请先修复本机 hidapi，再连接 SpaceMouse。"
+                ) from exc
+            if "No device connected/supported!" in message:
+                raise RuntimeError("未检测到可用的 SpaceMouse 设备。请连接设备后重试。") from exc
+            raise RuntimeError(f"SpaceMouse 初始化失败: {message}") from exc
+
+        if device is None:
+            raise RuntimeError("未检测到可用的 SpaceMouse 设备。")
 
         # Manager to handle shared state between processes
         self.manager = multiprocessing.Manager()
@@ -28,7 +61,7 @@ class SpaceMouseExpert:
 
     def _read_spacemouse(self):
         while True:
-            state = pyspacemouse.read_all()
+            state = self.pyspacemouse.read_all()
             action = [0.0] * 6
             buttons = [0, 0, 0, 0]
 

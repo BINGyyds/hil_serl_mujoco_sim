@@ -1,11 +1,10 @@
 # data_manager.py
 
-import numpy as np
-from pathlib import Path
-import pandas as pd
-import matplotlib.pyplot as plt
 import logging
+from pathlib import Path
 from typing import List
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +73,17 @@ class DataManager:
             return
 
         try:
-            self._save_robot_data_to_csv(robot_path)
+            import pandas as pd
+        except ImportError:
+            logger.warning("未安装 pandas，跳过 CSV 数据保存。")
+            return
+
+        try:
+            self._save_robot_data_to_csv(robot_path, pd)
         except Exception as e:
             logger.exception(f"保存数据到CSV文件时发生错误: {e}")
 
-    def _save_robot_data_to_csv(self, file_path: Path):
+    def _save_robot_data_to_csv(self, file_path: Path, pd):
         """保存机器人关节和末端相关数据到指定的CSV文件。"""
         logger.info(f"正在将机器人数据保存到CSV文件: {file_path}")
         
@@ -126,6 +131,12 @@ class DataManager:
         """
         if not self.timestamps:
             logger.warning("数据缓冲区为空，没有数据可供绘制。")
+            return
+
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning("未安装 matplotlib，跳过数据绘图。")
             return
 
         logger.info("正在绘制仿真数据图表...")

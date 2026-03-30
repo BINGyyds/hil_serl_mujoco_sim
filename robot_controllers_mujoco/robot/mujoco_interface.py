@@ -171,7 +171,12 @@ class MujocoInterface:
 
     def set_control(self, ctrl: np.ndarray) -> None:
         """设置 Panda 7 个关节的控制目标。"""
-        self.data.ctrl[:] = ctrl
+        control = np.asarray(ctrl, dtype=np.float64)
+        if control.shape != (len(self.arm_actuator_ids),):
+            raise ValueError(
+                f"控制输入维度错误，期望 {(len(self.arm_actuator_ids),)}，实际 {control.shape}"
+            )
+        self.data.ctrl[self.arm_actuator_ids] = control
 
     def step(self) -> None:
         """执行一步物理仿真。"""
