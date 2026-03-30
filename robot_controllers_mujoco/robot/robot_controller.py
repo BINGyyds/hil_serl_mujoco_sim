@@ -54,7 +54,7 @@ class RobotController:
             current_sim_time = self.mujoco_interface.data.time
 
             # 模块化处理循环内的各项任务
-            self._handle_rendering(current_sim_time)
+            # self._handle_rendering(current_sim_time)
             self._handle_data_logging(current_sim_time)
             self._execute_simulation_step(current_sim_time)
             
@@ -99,7 +99,8 @@ class RobotController:
         
         self.ee_tf_home = self.mujoco_interface.get_attachment_transform()
         self.ee_tf_final = self.ee_tf_home.copy()
-        self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.4])  # 在 z 方向向下平移 0.4 米
+        # self.ee_tf_final[:3, 3] += np.array([0.0, 0.0, -0.55])  # 在 z 方向向下平移 0.55 米
+        self.ee_tf_final[2, 3] = 0.1  # z 方向目标高度为 0.1 米
 
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
         self.q_final = self.robot_model.inverse_kinematics(self.ee_tf_final, q_init=self.q_home)
@@ -134,11 +135,11 @@ class RobotController:
         if self.config.USE_VIEWER:
             self.mujoco_interface.close_viewer()
 
-        # # 3. 保存记录的数据到CSV
-        # if self.config.ROBOT_DATA_PATH:
-        #     self.data_manager.save_data(
-        #         robot_path=self.config.ROBOT_DATA_PATH
-        #     )
+        # 3. 保存记录的数据到CSV
+        if self.config.ROBOT_DATA_PATH:
+            self.data_manager.save_data(
+                robot_path=self.config.ROBOT_DATA_PATH
+            )
             
         # 4. 绘制数据图表
         self.data_manager.plot_data()
@@ -160,6 +161,10 @@ class RobotController:
             current_q = self.mujoco_interface.get_arm_joint_angles()
             torques = self.mujoco_interface.get_joint_torques()
             ee_pos = self.mujoco_interface.get_end_effector_position()
+
+            # 打印关键信息到控制台
+            if current_sim_time % 2.0 < self.config.TIMESTEP:  # 每2秒打印一次
+                self.print_robot_info(ee_pos)
             
             # 将数据传递给数据管理器
             self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos)
@@ -179,7 +184,7 @@ class RobotController:
 
         self._apply_control(current_q, current_v, target_q, target_v, target_a)
         
-        # 5. 执行一步物理仿真
+        # 3. 执行一步物理仿真
         self.mujoco_interface.step()
 
     def _apply_control(self, current_q: np.ndarray, current_v: np.ndarray, target_q: np.ndarray, target_v: np.ndarray, target_a: np.ndarray) -> None:
@@ -200,8 +205,8 @@ class RobotController:
         elif self.config.CONTROL_MODE == 'effort':
             # 在力矩模式下，使用前馈+反馈（PD）控制律。
             # 1. 动力学前馈 (Inverse Dynamics)
-            # tau_ff = self.robot_model.inverse_dynamics(current_q, current_v, target_a)
-            tau_ff = self.robot_model.inverse_dynamics(target_q, target_v, target_a)
+            tau_ff = self.robot_model.inverse_dynamics(current_q, current_v, target_a)
+            # tau_ff = self.robot_model.inverse_dynamics(target_q, target_v, target_a)
             # 2. PD反馈
             q_error = target_q - current_q
             v_error = target_v - current_v

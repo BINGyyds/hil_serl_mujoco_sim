@@ -3,6 +3,10 @@
 
   <option integrator="implicitfast" impratio="10"/>
 
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
   <default>
     <default class="panda">
       <material specular="0.5" shininess="0.25"/>
@@ -195,6 +199,11 @@
                     <body name="attachment" pos="0 0 0.107" quat="0.3826834 0 0 0.9238795">
                       <site name="panda_link8_tcp"/>
                       <site name="attachment_site"/>
+                      <body name="tool_male">
+                        <geom name="tool_male_geom" type="box" pos="0 0 0.050" size="0.0225 0.020 0.050"
+                          density="1" rgba="0.4 0.2 0.1 0.5"/>
+                        <site name="tool_tip_site" pos="0 0 0.100"/>
+                      </body>
                     </body>
                   </body>
                 </body>
@@ -203,6 +212,19 @@
           </body>
         </body>
       </body>
+    </body>
+    <body name="tool_socket" pos="0.551995697 -0.0000519764153 0.0">
+      <geom name="tool_socket_left" type="box" pos="-0.0325 0 0.050" size="0.0075 0.0225 0.0425"
+        density="1" rgba="0.4 0.4 0.4 0.2"/>
+      <geom name="tool_socket_right" type="box" pos="0.0325 0 0.050" size="0.0075 0.0225 0.0425"
+        density="1" rgba="0.4 0.4 0.4 0.2"/>
+      <geom name="tool_socket_bottom" type="box" size="0.040 0.0225 0.0075"
+        density="1" rgba="0.4 0.4 0.4 0.2"/>
+      <geom name="tool_socket_side1" type="box" pos="0 0.030 0.0425" size="0.040 0.0075 0.050"
+        density="1" rgba="0.4 0.4 0.4 0.2"/>
+      <geom name="tool_socket_side2" type="box" pos="0 -0.030 0.0425" size="0.040 0.0075 0.050"
+        density="1" rgba="0.4 0.4 0.4 0.2"/>
+      <site name="tool_socket_center_site" pos="0 0 0.0925"/>
     </body>
   </worldbody>
 
