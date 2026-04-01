@@ -22,7 +22,7 @@
       </default>
 
       <default class="panda_velocity">
-        <velocity gear="1" kv="40" ctrllimited="true" forcelimited="true"/>
+        <velocity gear="1" kv="50000" ctrllimited="true" forcelimited="true"/>
       </default>
 
       <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4"/>
