@@ -1,9 +1,10 @@
 # robot_controller.py
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pinocchio as pin
 from scipy.spatial.transform import Rotation
 
 from robot_controllers_mujoco.robot.async_writer import AsyncVideoWriter
@@ -96,6 +97,7 @@ class RobotController:
 
         # 5. 在启动 viewer 前将机械臂重置到 home 位置。
         self.mujoco_interface.reset_to_home_keyframe()
+        self.mujoco_interface.forward()
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
         if self.config.INPUT_MODE == "planned":
             self._initialize_planned_mode()
@@ -175,8 +177,7 @@ class RobotController:
 
         self.filtered_spacemouse_action[:] = 0.0
         self.reset_button_pressed = False
-        self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
-        self.teleop_posture_reference = self.q_home.copy()
+        self._sync_teleop_reference_to_current_state()
 
     def _cleanup_simulation(self):
         """
@@ -235,57 +236,118 @@ class RobotController:
     def _execute_simulation_step(self, current_sim_time: float):
         """执行单步的物理仿真，包括获取状态、计算控制指令和步进。"""
         # 1. 获取当前机器人状态
-        current_q = self.mujoco_interface.get_arm_joint_angles()
-        current_v = self.mujoco_interface.get_arm_joint_velocities()
+        current_q, current_v = self._get_current_joint_state()
         
         if self.config.INPUT_MODE == "planned":
             target_q, target_v, target_a = self.robot_motion.evaluate_joint_trajectory(current_sim_time)
             self._apply_control(current_q, current_v, target_q, target_v, target_a)
         elif self.config.INPUT_MODE == "spacemouse":
-            qdot_command = self._compute_spacemouse_velocity_command(current_q)
-            self.mujoco_interface.set_control(qdot_command)
+            joint_velocity_command = self._run_spacemouse_teleop_step(  # 更新 teleop 目标位姿
+                current_q=current_q,
+                current_v=current_v,
+            )   
+            self._send_joint_velocity_command_to_mujoco(joint_velocity_command)
         else:
             raise ValueError(f"不支持的输入模式: {self.config.INPUT_MODE}")
         
         # 3. 执行一步物理仿真
         self.mujoco_interface.step()
 
-    def _compute_spacemouse_velocity_command(self, current_q: np.ndarray) -> np.ndarray:
-        """读取 SpaceMouse 输入并转换为关节速度命令。"""
+    def _get_current_joint_state(self) -> Tuple[np.ndarray, np.ndarray]:
+        """读取当前关节角度和关节角速度。"""
+        return self.mujoco_interface.get_arm_joint_state()
+
+    def _get_current_end_effector_kinematics(
+        self,
+        current_q: np.ndarray,
+        current_v: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """使用 Pinocchio 计算当前末端位姿与 LOCAL twist。"""
+        return self.robot_model.end_effector_kinematics(current_q, current_v)
+
+    def _sync_teleop_reference_to_current_state(self) -> None:
+        """将 teleop 初始期望位姿同步到 MuJoCo 当前状态。"""
+        self.mujoco_interface.forward()
+        current_q, _ = self._get_current_joint_state()
+        self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
+        self.teleop_posture_reference = current_q.copy()
+        self.filtered_spacemouse_action[:] = 0.0
+
+    def _read_spacemouse_input(self) -> Tuple[np.ndarray, list]:
+        """读取最新的 SpaceMouse 6D 输入和按钮状态。"""
         if self.spacemouse is None:
             raise RuntimeError("SpaceMouse 尚未初始化。")
 
         action, buttons = self.spacemouse.get_action()
+        return np.asarray(action[:6], dtype=np.float64), buttons
+
+    def _handle_spacemouse_reset_request(self, buttons: list) -> bool:
+        """处理 SpaceMouse 的复位请求。"""
         reset_pressed = bool(buttons[0]) if buttons else False
         if reset_pressed:
             if not self.reset_button_pressed:
                 self.mujoco_interface.reset_to_home_keyframe()
-                self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
-                self.teleop_posture_reference = self.mujoco_interface.get_arm_joint_angles()
-                self.filtered_spacemouse_action[:] = 0.0
+                self._sync_teleop_reference_to_current_state()
             self.reset_button_pressed = True
-            return np.zeros_like(current_q)
+            return True
 
         self.reset_button_pressed = reset_pressed
+        return False
 
-        twist_command = self._filter_spacemouse_action(np.asarray(action[:6], dtype=np.float64))
+    def _run_spacemouse_teleop_step(
+        self,
+        current_q: np.ndarray,
+        current_v: np.ndarray,
+    ) -> np.ndarray:
+        """执行一次 SpaceMouse teleop 控制计算。"""
+        raw_spacemouse_action, buttons = self._read_spacemouse_input()
+        if self._handle_spacemouse_reset_request(buttons):
+            return np.zeros_like(current_q)
+
+        current_transform, _ = self._get_current_end_effector_kinematics(
+            current_q,
+            current_v,
+        )
+        desired_transform = self._update_desired_transform_from_spacemouse(
+            raw_spacemouse_action
+        )
+        return self._compute_joint_velocity_command_from_pose_error(
+            current_q=current_q,
+            current_transform=current_transform,
+            desired_transform=desired_transform,
+        )
+
+    def _update_desired_transform_from_spacemouse(
+        self,
+        raw_spacemouse_action: np.ndarray,
+    ) -> np.ndarray:
+        """根据 SpaceMouse 增量输入更新期望末端位姿。"""
         if self.teleop_target_transform is None:
-            self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
-        self._integrate_teleop_target_transform(twist_command)
+            self._sync_teleop_reference_to_current_state()
 
-        current_transform = self.mujoco_interface.get_attachment_transform()
+        twist_command = self._filter_spacemouse_action(raw_spacemouse_action)
+        self._integrate_teleop_target_transform(twist_command)
+        return self.teleop_target_transform.copy()
+
+    def _compute_joint_velocity_command_from_pose_error(
+        self,
+        current_q: np.ndarray,
+        current_transform: np.ndarray,
+        desired_transform: np.ndarray,
+    ) -> np.ndarray:
+        """根据当前/期望末端位姿误差计算关节命令速度。"""
         pose_error = self._compute_local_pose_error(
             current_transform=current_transform,
-            target_transform=self.teleop_target_transform,
+            target_transform=desired_transform,
         )
-        pose_error[:3] *= self.config.TELEOP_POSITION_KP
-        pose_error[3:] *= self.config.TELEOP_ROTATION_KP
+
+        K_pose = 25.0  # 末端空间的比例增益 
 
         jacobian = self.robot_model.jacobian(current_q)
         damping_matrix = self.config.IK_DAMPING * np.eye(6, dtype=np.float64)
         jjt = jacobian @ jacobian.T
         jacobian_pinv = jacobian.T @ np.linalg.solve(jjt + damping_matrix, np.eye(6))
-        qdot_task = jacobian_pinv @ pose_error
+        qdot_task = K_pose * jacobian_pinv @ pose_error
 
         qdot_null = self.config.NULLSPACE_GAIN * (self.teleop_posture_reference - current_q)
         nullspace_projector = np.eye(jacobian.shape[1], dtype=np.float64) - jacobian_pinv @ jacobian
@@ -298,6 +360,28 @@ class RobotController:
         )
         qdot_command = np.clip(qdot_command, -joint_velocity_limits, joint_velocity_limits)
         return qdot_command
+
+    def _send_joint_velocity_command_to_mujoco(
+        self,
+        joint_velocity_command: np.ndarray,
+    ) -> None:
+        """将关节速度命令按关节名映射后下发到 MuJoCo。"""
+        joint_velocity = np.asarray(joint_velocity_command, dtype=np.float64)
+        if joint_velocity.shape != (len(self.config.MUJOCO_ARM_JOINT_NAMES),):
+            raise ValueError(
+                "关节速度命令维度错误，"
+                f"期望 {(len(self.config.MUJOCO_ARM_JOINT_NAMES),)}，"
+                f"实际 {joint_velocity.shape}"
+            )
+
+        joint_velocity_by_name: Dict[str, float] = {
+            joint_name: float(velocity)
+            for joint_name, velocity in zip(
+                self.config.MUJOCO_ARM_JOINT_NAMES,
+                joint_velocity,
+            )
+        }
+        self.mujoco_interface.set_named_joint_velocity_command(joint_velocity_by_name)
 
     def _filter_spacemouse_action(self, raw_action: np.ndarray) -> np.ndarray:
         """对 SpaceMouse 输入做死区、缩放和低通滤波。"""
@@ -333,8 +417,8 @@ class RobotController:
         target_rotation = target_transform[:3, :3]
         target_position = target_transform[:3, 3]
 
-        target_position = target_position + target_rotation @ delta_translation_local
-        target_rotation = target_rotation @ Rotation.from_rotvec(delta_rotation_local).as_matrix()
+        target_position = target_position + delta_translation_local
+        target_rotation = Rotation.from_rotvec(delta_rotation_local).as_matrix() @ target_rotation
 
         self.teleop_target_transform[:3, :3] = target_rotation
         self.teleop_target_transform[:3, 3] = target_position
@@ -344,15 +428,17 @@ class RobotController:
         current_transform: np.ndarray,
         target_transform: np.ndarray,
     ) -> np.ndarray:
-        """计算在当前末端局部坐标系下的 6D 位姿误差。"""
-        current_rotation = current_transform[:3, :3]
-        target_rotation = target_transform[:3, :3]
-        current_position = current_transform[:3, 3]
-        target_position = target_transform[:3, 3]
-
-        position_error_local = current_rotation.T @ (target_position - current_position)
-        rotation_error_local = Rotation.from_matrix(current_rotation.T @ target_rotation).as_rotvec()
-        return np.concatenate([position_error_local, rotation_error_local])
+        """使用 Pinocchio log6 计算 ``log6(T * T_d^{-1})`` 形式的 6D 位姿误差。"""
+        current_pose = pin.SE3(
+            np.asarray(current_transform[:3, :3], dtype=np.float64),
+            np.asarray(current_transform[:3, 3], dtype=np.float64),
+        )
+        target_pose = pin.SE3(
+            np.asarray(target_transform[:3, :3], dtype=np.float64),
+            np.asarray(target_transform[:3, 3], dtype=np.float64),
+        )
+        pose_error = current_pose * target_pose.inverse()
+        return np.asarray(pin.log6(pose_error).vector, dtype=np.float64).reshape(6)
 
     def _apply_joint_limit_guard(
         self,

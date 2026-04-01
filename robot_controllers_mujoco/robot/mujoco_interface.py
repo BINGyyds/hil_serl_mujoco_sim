@@ -40,10 +40,20 @@ class MujocoInterface:
         """根据配置缓存 actuator、site、body 和 sensor 的索引信息。"""
         self.arm_joint_names = config.MUJOCO_ARM_JOINT_NAMES
         self.arm_actuator_names = config.MUJOCO_ARM_ACTUATOR_NAMES
+        if len(self.arm_joint_names) != len(self.arm_actuator_names):
+            raise ValueError("关节名与 actuator 名数量不一致，无法建立速度命令映射。")
+
         self.arm_actuator_ids = np.array(
             [self.model.actuator(name).id for name in self.arm_actuator_names],
             dtype=np.int32,
         )
+        self.arm_joint_name_to_actuator_id = {
+            joint_name: self.model.actuator(actuator_name).id
+            for joint_name, actuator_name in zip(
+                self.arm_joint_names,
+                self.arm_actuator_names,
+            )
+        }
 
         self.base_site_id = (
             self.model.site(config.MUJOCO_BASE_SITE_NAME).id
@@ -114,6 +124,10 @@ class MujocoInterface:
         """将机械臂重置到 MJCF 中定义的 home keyframe。"""
         self.reset_to_keyframe("home")
 
+    def forward(self) -> None:
+        """执行一次空 forward，刷新 site/body/sensor 等派生状态。"""
+        mujoco.mj_forward(self.model, self.data)
+
     def get_arm_joint_angles(self) -> np.ndarray:
         """读取机械臂当前关节角度。"""
         return np.asarray(
@@ -127,6 +141,10 @@ class MujocoInterface:
             [self._read_scalar_sensor(sensor_slice) for sensor_slice in self.arm_joint_vel_sensor_slices],
             dtype=np.float64,
         )
+
+    def get_arm_joint_state(self) -> Tuple[np.ndarray, np.ndarray]:
+        """读取机械臂当前关节角度和关节速度。"""
+        return self.get_arm_joint_angles(), self.get_arm_joint_velocities()
 
     def get_joint_torques(self) -> np.ndarray:
         """读取 Panda 7 个关节执行器当前输出。"""
@@ -177,6 +195,23 @@ class MujocoInterface:
                 f"控制输入维度错误，期望 {(len(self.arm_actuator_ids),)}，实际 {control.shape}"
             )
         self.data.ctrl[self.arm_actuator_ids] = control
+
+    def set_named_joint_velocity_command(
+        self,
+        joint_velocity_by_name: Dict[str, float],
+    ) -> None:
+        """按关节名写入速度控制命令。"""
+        unknown_joint_names = sorted(
+            set(joint_velocity_by_name) - set(self.arm_joint_name_to_actuator_id)
+        )
+        if unknown_joint_names:
+            raise ValueError(
+                f"未知关节名，无法下发速度命令: {unknown_joint_names}"
+            )
+
+        for joint_name, joint_velocity in joint_velocity_by_name.items():
+            actuator_id = self.arm_joint_name_to_actuator_id[joint_name]
+            self.data.ctrl[actuator_id] = float(joint_velocity)
 
     def step(self) -> None:
         """执行一步物理仿真。"""

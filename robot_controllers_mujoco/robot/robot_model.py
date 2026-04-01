@@ -50,6 +50,22 @@ class RobotModel:
         rotation = np.asarray(pose.rotation, dtype=np.float64).copy()
         return position, rotation
 
+    def end_effector_kinematics(
+        self,
+        q: np.ndarray,
+        qd: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """返回末端 4x4 位姿和 LOCAL 坐标系下的 6D twist。"""
+        position, rotation = self.forward_kinematics(q)
+
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = rotation
+        transform[:3, 3] = position
+
+        qd_array = np.asarray(qd, dtype=np.float64).reshape((-1,))
+        twist_local = self.jacobian(q) @ qd_array
+        return transform, twist_local
+
     def jacobian(self, q: np.ndarray) -> np.ndarray:
         """返回末端在 LOCAL 坐标系下的 6x7 Jacobian。"""
         q_array = np.asarray(q, dtype=np.float64)
