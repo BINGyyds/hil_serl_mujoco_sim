@@ -11,11 +11,13 @@ class ProjectConfig:
     ALLOW_MISSING_SPACEMOUSE: bool = False
 
     SIMULATION_DURATION: float = 50.0
-    TIMESTEP: float = 0.002
+    TIMESTEP: float = 0.001
 
     USE_VIEWER: bool = True
     VIDEO_FPS: int = 30
     VIDEO_SPEED_MULTIPLIER: float = 1.0
+    SYNC_TO_REAL_TIME: bool = True
+    REAL_TIME_FACTOR: float = 1.0
 
     DATA_LOGGING_INTERVAL: float = 0.01
 
@@ -101,6 +103,8 @@ class ProjectConfig:
             raise ValueError(
                 "planned 模式当前仅支持 CONTROL_MODE='position' 或 'effort'。"
             )
+        if self.REAL_TIME_FACTOR <= 0.0:
+            raise ValueError("REAL_TIME_FACTOR 必须大于 0。")
 
         self.MAIN_VIDEO_PATH = self.output_root / "videos" / "main_simulation.mp4"
         self.ROBOT_DATA_PATH = self.output_root / "docs" / "robot_data.csv"

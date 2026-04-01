@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pinocchio as pin
 from scipy.spatial.transform import Rotation
+import time
 
 from robot_controllers_mujoco.robot.async_writer import AsyncVideoWriter
 from robot_controllers_mujoco.robot.config import ProjectConfig
@@ -42,6 +43,8 @@ class RobotController:
         self.q_home = np.zeros(7, dtype=np.float64)
         self.teleop_target_transform: Optional[np.ndarray] = None
         self.teleop_posture_reference = np.zeros(7, dtype=np.float64)
+        self.wall_time_start = 0.0
+        self.sim_time_start = 0.0
         
         # --- 内部状态变量 ---
         self.video_writers: List[AsyncVideoWriter] = []
@@ -61,18 +64,17 @@ class RobotController:
             setup_started = True
             logger.info("主仿真循环开始...")
 
-            while self.mujoco_interface.data.time < self.config.SIMULATION_DURATION:
-                current_sim_time = self.mujoco_interface.data.time
-
+            # while self.mujoco_interface.data.time < self.config.SIMULATION_DURATION:
+            while True:
                 # 模块化处理循环内的各项任务
-                # self._handle_rendering(current_sim_time)
+                current_sim_time = self.mujoco_interface.data.time
                 self._handle_data_logging(current_sim_time)
                 self._execute_simulation_step(current_sim_time)
-                
-                # 与查看器同步（如果开启）
-                if self.config.USE_VIEWER: 
-                    self.mujoco_interface.sync_viewer()
 
+                updated_sim_time = self.mujoco_interface.data.time
+                self._handle_rendering(updated_sim_time)
+                self._sync_to_real_time(updated_sim_time)
+                
             logger.info("主仿真循环结束。")
         finally:
             if setup_started or self.video_writers or self.spacemouse is not None:
@@ -89,6 +91,8 @@ class RobotController:
         self.video_frame_duration = 1.0 / self.config.VIDEO_FPS
         self.next_frame_sim_time = 0.0
         self.next_log_time = 0.0
+        self.wall_time_start = time.perf_counter()
+        self.sim_time_start = self.mujoco_interface.data.time
 
         # 4. 设置默认相机视角
         self.mujoco_interface.set_camera_view(
@@ -209,12 +213,26 @@ class RobotController:
 
     def _handle_rendering(self, current_sim_time: float):
         """在仿真循环中处理视频帧的渲染和分发。"""
-        if current_sim_time >= self.next_frame_sim_time and self.video_writers:
-            # 渲染主摄像头画面
-            main_frame = self.mujoco_interface.render_frame(camera=self.mujoco_interface.camera)
-            self.video_writers[0].add_frame(main_frame)
-            # 更新下一个渲染时间点
-            self.next_frame_sim_time += self.video_frame_duration
+        # if self.video_writers and current_sim_time >= self.next_frame_sim_time:
+        #     main_frame = self.mujoco_interface.render_frame(camera=self.mujoco_interface.camera)
+        #     self.video_writers[0].add_frame(main_frame)
+        #     while current_sim_time >= self.next_frame_sim_time:
+        #         self.next_frame_sim_time += self.video_frame_duration
+        if self.config.USE_VIEWER:
+            self.mujoco_interface.sync_viewer()
+
+    def _sync_to_real_time(self, current_sim_time: float) -> None:
+        """将仿真时间与墙上时钟对齐。"""
+        if not self.config.SYNC_TO_REAL_TIME:
+            return
+
+        target_wall_time = self.wall_time_start + (
+            (current_sim_time - self.sim_time_start) / self.config.REAL_TIME_FACTOR
+        )
+        remaining = target_wall_time - time.perf_counter()
+        if remaining > 0.0:
+            time.sleep(remaining)
+
 
     def _handle_data_logging(self, current_sim_time: float):
         """在仿真循环中处理数据的采样和记录。"""
@@ -410,8 +428,8 @@ class RobotController:
             raise RuntimeError("teleop 参考位姿尚未初始化。")
 
         dt = float(self.config.TIMESTEP)
-        delta_translation_local = twist_command[:3] * dt
-        delta_rotation_local = twist_command[3:] * dt
+        delta_translation_local = twist_command[:3] * dt * 0.2
+        delta_rotation_local = twist_command[3:] * dt * 0.1
 
         target_transform = self.teleop_target_transform.copy()
         target_rotation = target_transform[:3, :3]
