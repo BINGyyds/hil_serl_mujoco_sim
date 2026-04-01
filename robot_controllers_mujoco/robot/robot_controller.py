@@ -437,7 +437,7 @@ class RobotController:
             np.asarray(target_transform[:3, :3], dtype=np.float64),
             np.asarray(target_transform[:3, 3], dtype=np.float64),
         )
-        pose_error = current_pose * target_pose.inverse()
+        pose_error = current_pose.inverse() * target_pose
         return np.asarray(pin.log6(pose_error).vector, dtype=np.float64).reshape(6)
 
     def _apply_joint_limit_guard(
