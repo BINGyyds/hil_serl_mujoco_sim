@@ -16,16 +16,23 @@ class MujocoInterface:
 
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
+        model_config = config.model
+        sim_config = config.sim
         try:
-            self.model: mujoco.MjModel = mujoco.MjModel.from_xml_path(str(config.MJCF_PATH))
-            if config.TIMESTEP is not None:
-                self.model.opt.timestep = config.TIMESTEP
+            if model_config.mjcf_path is None:
+                raise ValueError("MJCF 路径尚未配置。")
+
+            self.model: mujoco.MjModel = mujoco.MjModel.from_xml_path(
+                str(model_config.mjcf_path)
+            )
+            if sim_config.timestep is not None:
+                self.model.opt.timestep = sim_config.timestep
 
             self.data: mujoco.MjData = mujoco.MjData(self.model)
-            logger.info("MuJoCo 模型加载成功: %s", config.MJCF_PATH)
+            logger.info("MuJoCo 模型加载成功: %s", model_config.mjcf_path)
             logger.info("仿真时间步长 (dt) 设置为: %s", self.model.opt.timestep)
         except Exception as exc:
-            logger.exception("加载 MuJoCo 模型失败: %s", config.MJCF_PATH)
+            logger.exception("加载 MuJoCo 模型失败: %s", model_config.mjcf_path)
             raise exc
 
         self.viewer: Optional[mujoco.viewer.Handle] = None
@@ -38,8 +45,10 @@ class MujocoInterface:
 
     def _get_ids_from_config(self, config: ProjectConfig) -> None:
         """根据配置缓存 actuator、site、body 和 sensor 的索引信息。"""
-        self.arm_joint_names = config.MUJOCO_ARM_JOINT_NAMES
-        self.arm_actuator_names = config.MUJOCO_ARM_ACTUATOR_NAMES
+        model_config = config.model
+
+        self.arm_joint_names = model_config.arm_joint_names
+        self.arm_actuator_names = model_config.arm_actuator_names
         if len(self.arm_joint_names) != len(self.arm_actuator_names):
             raise ValueError("关节名与 actuator 名数量不一致，无法建立速度命令映射。")
 
@@ -56,35 +65,35 @@ class MujocoInterface:
         }
 
         self.base_site_id = (
-            self.model.site(config.MUJOCO_BASE_SITE_NAME).id
-            if config.MUJOCO_BASE_SITE_NAME
+            self.model.site(model_config.base_site_name).id
+            if model_config.base_site_name
             else None
         )
         self.end_effector_site_id = self.model.site(
-            config.MUJOCO_END_EFFECTOR_SITE_NAME
+            model_config.end_effector_site_name
         ).id
         self.attachment_body_id = self.model.body("attachment").id
 
         self.arm_joint_pos_sensor_slices = tuple(
             self._get_sensor_slice(name, expected_dim=1)
-            for name in config.MUJOCO_ARM_JOINT_POS_SENSOR_NAMES
+            for name in model_config.arm_joint_pos_sensor_names
         )
         self.arm_joint_vel_sensor_slices = tuple(
             self._get_sensor_slice(name, expected_dim=1)
-            for name in config.MUJOCO_ARM_JOINT_VEL_SENSOR_NAMES
+            for name in model_config.arm_joint_vel_sensor_names
         )
         self.arm_joint_torque_sensor_slices = tuple(
             self._get_sensor_slice(name, expected_dim=1)
-            for name in config.MUJOCO_ARM_JOINT_TORQUE_SENSOR_NAMES
+            for name in model_config.arm_joint_torque_sensor_names
         )
         self.end_effector_pos_sensor_slice = self._get_sensor_slice(
-            config.MUJOCO_END_EFFECTOR_POS_SENSOR_NAME, expected_dim=3
+            model_config.end_effector_pos_sensor_name, expected_dim=3
         )
         self.attachment_pos_sensor_slice = self._get_sensor_slice(
-            config.MUJOCO_ATTACHMENT_POS_SENSOR_NAME, expected_dim=3
+            model_config.attachment_pos_sensor_name, expected_dim=3
         )
         self.attachment_quat_sensor_slice = self._get_sensor_slice(
-            config.MUJOCO_ATTACHMENT_QUAT_SENSOR_NAME, expected_dim=4
+            model_config.attachment_quat_sensor_name, expected_dim=4
         )
 
     def _get_sensor_slice(self, sensor_name: str, expected_dim: int) -> slice:

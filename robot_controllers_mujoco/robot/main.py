@@ -64,11 +64,11 @@ def main() -> None:
     try:
         # 2. 创建配置对象，并使用命令行参数覆盖默认值
         # 这是整个项目配置的唯一来源
-        config = ProjectConfig(
-            USE_VIEWER=not args.no_viewer,
-            INPUT_MODE=args.input_mode if args.input_mode is not None else ProjectConfig.INPUT_MODE,
-            CONTROL_MODE=args.control_mode if args.control_mode is not None else ProjectConfig.CONTROL_MODE,
-            ALLOW_MISSING_SPACEMOUSE=args.allow_missing_spacemouse,
+        config = ProjectConfig.from_overrides(
+            use_viewer=not args.no_viewer,
+            input_mode=args.input_mode,
+            control_mode=args.control_mode,
+            allow_missing_spacemouse=args.allow_missing_spacemouse,
         )
         
         # 3. 创建控制器实例并传入配置对象
