@@ -3,9 +3,10 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import pinocchio as pin
-from scipy.spatial.transform import Rotation
 
+from robot_controllers_mujoco.controllers.task_space_velocity_controller import (
+    TaskSpaceVelocityController,
+)
 from robot_controllers_mujoco.robot.async_writer import AsyncVideoWriter
 from robot_controllers_mujoco.robot.config import ProjectConfig
 from robot_controllers_mujoco.robot.data_manager import DataManager
@@ -33,11 +34,8 @@ class RobotController:
         self.spacemouse: Optional[Any] = None
         self.video_writers: List[AsyncVideoWriter] = []
 
-        self.filtered_spacemouse_action = np.zeros(6, dtype=np.float64)
         self.reset_button_pressed = False
         self.q_home = np.zeros(7, dtype=np.float64)
-        self.teleop_target_transform: Optional[np.ndarray] = None
-        self.teleop_posture_reference = np.zeros(7, dtype=np.float64)
 
         self.wall_time_start = 0.0
         self.sim_time_start = 0.0
@@ -47,6 +45,22 @@ class RobotController:
 
         self.effort_kp = np.diag(config.effort_control.kp_gains)
         self.effort_kd = np.diag(config.effort_control.kd_gains)
+        self.task_space_controller = TaskSpaceVelocityController(
+            input_deadzone=config.teleop.spacemouse_deadzone,
+            input_filter_alpha=config.teleop.spacemouse_filter_alpha,
+            max_reference_linear_velocity=config.teleop.max_reference_linear_velocity,
+            max_reference_angular_velocity=config.teleop.max_reference_angular_velocity,
+            pose_error_gain=config.teleop.pose_error_gain,
+            ik_damping=config.teleop.ik_damping,
+            nullspace_gain=config.teleop.nullspace_gain,
+            joint_velocity_limits=np.asarray(
+                config.teleop.joint_velocity_limits,
+                dtype=np.float64,
+            ),
+            joint_limit_margin=config.teleop.joint_limit_margin,
+            lower_position_limits=self.robot_model.lower_position_limits,
+            upper_position_limits=self.robot_model.upper_position_limits,
+        )
 
     def run_simulation(self) -> None:
         """运行主仿真循环。"""
@@ -166,7 +180,6 @@ class RobotController:
             self.spacemouse = ZeroSpaceMouseExpert()
             logger.warning("SpaceMouse 不可用，已回退到零输入 teleop 模式: %s", exc)
 
-        self.filtered_spacemouse_action[:] = 0.0
         self.reset_button_pressed = False
         self._sync_teleop_reference_to_current_state()
 
@@ -290,13 +303,13 @@ class RobotController:
             current_q,
             current_v,
         )
-        desired_transform = self._update_desired_transform_from_spacemouse(
-            raw_spacemouse_action
-        )
-        return self._compute_joint_velocity_command_from_pose_error(
+        jacobian = self.robot_model.jacobian(current_q)
+        return self.task_space_controller.compute_command(
+            raw_action=raw_spacemouse_action,
             current_q=current_q,
             current_transform=current_transform,
-            desired_transform=desired_transform,
+            jacobian=jacobian,
+            dt=self.config.sim.timestep,
         )
 
     def _read_spacemouse_input(self) -> Tuple[np.ndarray, list]:
@@ -336,142 +349,11 @@ class RobotController:
         """将 teleop 参考位姿同步到 MuJoCo 当前状态。"""
         self.mujoco_interface.forward()
         current_q, _ = self._get_current_joint_state()
-        self.teleop_target_transform = self.mujoco_interface.get_attachment_transform()
-        self.teleop_posture_reference = current_q.copy()
-        self.filtered_spacemouse_action[:] = 0.0
-
-    def _update_desired_transform_from_spacemouse(
-        self,
-        raw_spacemouse_action: np.ndarray,
-    ) -> np.ndarray:
-        """根据 SpaceMouse 输入更新期望末端位姿。"""
-        if self.teleop_target_transform is None:
-            self._sync_teleop_reference_to_current_state()
-
-        filtered_command = self._filter_spacemouse_input(raw_spacemouse_action)
-        self._integrate_teleop_target_transform(filtered_command)
-        return self.teleop_target_transform.copy()
-
-    def _filter_spacemouse_input(self, raw_action: np.ndarray) -> np.ndarray:
-        """对 SpaceMouse 输入做死区和一阶低通滤波。"""
-        if raw_action.shape != (6,):
-            raise ValueError(f"SpaceMouse 输入维度错误，期望 (6,)，实际 {raw_action.shape}")
-
-        action = raw_action.copy()
-        action[
-            np.abs(action) < self.config.teleop.spacemouse_deadzone
-        ] = 0.0
-        if not np.any(action):
-            self.filtered_spacemouse_action[:] = 0.0
-            return np.zeros(6, dtype=np.float64)
-
-        alpha = float(
-            np.clip(self.config.teleop.spacemouse_filter_alpha, 0.0, 1.0)
-        )
-        self.filtered_spacemouse_action = (
-            alpha * action + (1.0 - alpha) * self.filtered_spacemouse_action
-        )
-        return self.filtered_spacemouse_action.copy()
-
-    def _integrate_teleop_target_transform(self, filtered_command: np.ndarray) -> None:
-        """将归一化 teleop 命令积分为末端参考位姿。"""
-        if self.teleop_target_transform is None:
-            raise RuntimeError("teleop 参考位姿尚未初始化。")
-
-        dt = float(self.config.sim.timestep)
-        delta_translation_local = (
-            filtered_command[:3]
-            * dt
-            * self.config.teleop.max_reference_linear_velocity
-        )
-        delta_rotation_local = (
-            filtered_command[3:]
-            * dt
-            * self.config.teleop.max_reference_angular_velocity
-        )
-
-        target_transform = self.teleop_target_transform.copy()
-        target_rotation = target_transform[:3, :3]
-        target_position = target_transform[:3, 3]
-
-        target_position = target_position + delta_translation_local
-        target_rotation = (
-            Rotation.from_rotvec(delta_rotation_local).as_matrix() @ target_rotation
-        )
-
-        self.teleop_target_transform[:3, :3] = target_rotation
-        self.teleop_target_transform[:3, 3] = target_position
-
-    def _compute_joint_velocity_command_from_pose_error(
-        self,
-        current_q: np.ndarray,
-        current_transform: np.ndarray,
-        desired_transform: np.ndarray,
-    ) -> np.ndarray:
-        """根据当前/期望末端位姿误差计算关节速度命令。"""
-        pose_error = self._compute_local_pose_error(
+        current_transform = self.mujoco_interface.get_attachment_transform()
+        self.task_space_controller.reset(
             current_transform=current_transform,
-            target_transform=desired_transform,
+            current_q=current_q,
         )
-
-        jacobian = self.robot_model.jacobian(current_q)
-        damping_matrix = self.config.teleop.ik_damping * np.eye(6, dtype=np.float64)
-        jjt = jacobian @ jacobian.T
-        jacobian_pinv = jacobian.T @ np.linalg.solve(
-            jjt + damping_matrix,
-            np.eye(6),
-        )
-        qdot_task = self.config.teleop.pose_error_gain * (jacobian_pinv @ pose_error)
-
-        qdot_null = self.config.teleop.nullspace_gain * (
-            self.teleop_posture_reference - current_q
-        )
-        nullspace_projector = (
-            np.eye(jacobian.shape[1], dtype=np.float64) - jacobian_pinv @ jacobian
-        )
-        qdot_command = qdot_task + nullspace_projector @ qdot_null
-        qdot_command = self._apply_joint_limit_guard(current_q, qdot_command)
-
-        joint_velocity_limits = np.asarray(
-            self.config.teleop.joint_velocity_limits,
-            dtype=np.float64,
-        )
-        qdot_command = np.clip(qdot_command, -joint_velocity_limits, joint_velocity_limits)
-        return qdot_command
-
-    def _compute_local_pose_error(
-        self,
-        current_transform: np.ndarray,
-        target_transform: np.ndarray,
-    ) -> np.ndarray:
-        """使用 Pinocchio log6 计算 6D LOCAL 位姿误差。"""
-        current_pose = pin.SE3(
-            np.asarray(current_transform[:3, :3], dtype=np.float64),
-            np.asarray(current_transform[:3, 3], dtype=np.float64),
-        )
-        target_pose = pin.SE3(
-            np.asarray(target_transform[:3, :3], dtype=np.float64),
-            np.asarray(target_transform[:3, 3], dtype=np.float64),
-        )
-        pose_error = current_pose.inverse() * target_pose
-        return np.asarray(pin.log6(pose_error).vector, dtype=np.float64).reshape(6)
-
-    def _apply_joint_limit_guard(
-        self,
-        current_q: np.ndarray,
-        qdot_command: np.ndarray,
-    ) -> np.ndarray:
-        """在接近关节限位时抑制继续向外的速度命令。"""
-        qdot_safe = np.asarray(qdot_command, dtype=np.float64).copy()
-        lower = self.robot_model.lower_position_limits
-        upper = self.robot_model.upper_position_limits
-        finite_mask = np.isfinite(lower) & np.isfinite(upper)
-        margin = self.config.teleop.joint_limit_margin
-
-        lower_block = finite_mask & (current_q <= lower + margin) & (qdot_safe < 0.0)
-        upper_block = finite_mask & (current_q >= upper - margin) & (qdot_safe > 0.0)
-        qdot_safe[lower_block | upper_block] = 0.0
-        return qdot_safe
 
     def _send_joint_velocity_command_to_mujoco(
         self,

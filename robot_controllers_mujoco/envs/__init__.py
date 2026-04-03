@@ -1,5 +1,5 @@
 from robot_controllers_mujoco.envs.franka_mujoco_env import FrankaMujocoEnv
-from robot_controllers_mujoco.envs.franka_reach_env import FrankaReachEnv
+from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv
 from robot_controllers_mujoco.envs.wrappers import (
     MujocoSERLObsWrapper,
     MujocoSpacemouseIntervention,
@@ -7,7 +7,7 @@ from robot_controllers_mujoco.envs.wrappers import (
 
 __all__ = [
     "FrankaMujocoEnv",
-    "FrankaReachEnv",
+    "FrankaInsertionEnv",
     "MujocoSERLObsWrapper",
     "MujocoSpacemouseIntervention",
 ]

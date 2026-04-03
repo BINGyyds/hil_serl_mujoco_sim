@@ -71,10 +71,11 @@ else
     info "Intel macOS: 保留默认 easyhid 安装"
 fi
 
-info "验证 Gym 环境"
+info "验证 insertion Gym 环境"
 python -c "
-from robot_controllers_mujoco import FrankaReachEnv, make_reach_config
-env = FrankaReachEnv(config=make_reach_config())
+from robot_controllers_mujoco.configs.insertion_config import make_insertion_config
+from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv
+env = FrankaInsertionEnv(config=make_insertion_config())
 obs, _ = env.reset()
 print('obs keys:', list(obs['state'].keys()))
 print('action space:', env.action_space)
@@ -105,5 +106,5 @@ echo
 info "环境已准备完成。"
 info "激活环境: conda activate $ENV_NAME"
 info "控制器入口: python -m robot_controllers_mujoco.robot.main --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
-info "录制 demo: python scripts/record_demos_mujoco.py --output demo_data/reach_demos.pkl"
+info "录制 demo: python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25"
 warn "如果安装了 3Dconnexion 官方驱动，运行前建议先退出 3DconnexionHelper。"

@@ -1,0 +1,61 @@
+"""
+Configuration helpers for the MuJoCo Franka insertion task.
+"""
+
+from pathlib import Path
+
+import numpy as np
+
+from robot_controllers_mujoco.envs.franka_insertion_env import InsertionConfig
+
+_MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "franka_panda"
+
+
+def make_insertion_config(**overrides) -> InsertionConfig:
+    """Create the default insertion-task configuration."""
+    defaults = dict(
+        mjcf_path=str(_MODEL_DIR / "insertion_scene.xml"),
+        ee_site_name="tool_tip_site",
+        socket_site_name="tool_socket_center_site",
+        actuator_mode="velocity",
+
+        sim_timestep=0.002,
+        n_substeps=20,
+
+        pos_action_scale=0.02,
+        rot_action_scale=0.08,
+
+        reset_pos_noise_low=np.array([-0.01, -0.0015, 0.0]),
+        reset_pos_noise_high=np.array([0.01, 0.0015, 0.0]),
+        reset_yaw_range=0.08,
+
+        reward_xy_weight=8.0,
+        reward_z_weight=1.5,
+        reward_rot_weight=0.3,
+        reward_depth_weight=2.0,
+        reward_success_bonus=25.0,
+
+        success_xy_threshold=0.004,
+        success_rot_threshold=0.12,
+        success_tip_z_threshold=0.105,
+
+        workspace_low=np.array([0.49, -0.05, 0.05]),
+        workspace_high=np.array([0.62, 0.05, 0.58]),
+        failure_xy_threshold=0.03,
+        failure_tip_z_threshold=0.075,
+
+        input_deadzone=0.05,
+        input_filter_alpha=0.25,
+        max_reference_linear_velocity=0.05,
+        max_reference_angular_velocity=0.10,
+        pose_error_gain=25.0,
+        ik_damping=1e-4,
+        nullspace_gain=0.15,
+        joint_velocity_limits=(2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610),
+        joint_limit_margin=0.05,
+
+        max_episode_steps=200,
+        render_camera="front",
+    )
+    defaults.update(overrides)
+    return InsertionConfig(**defaults)

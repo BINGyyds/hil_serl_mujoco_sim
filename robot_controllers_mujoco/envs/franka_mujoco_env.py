@@ -1,9 +1,10 @@
 """
 Base MuJoCo Gymnasium environment for Franka Panda.
 
-Provides Cartesian delta control mapped to joint-level position actuators
-via the site Jacobian pseudo-inverse.  Observation and action interfaces
-are designed to be compatible with the hil-serl training pipeline.
+Provides Cartesian delta control mapped to joint-level actuators via the site
+Jacobian pseudo-inverse.  Position-actuated scenes interpret the mapped joint
+command as a target configuration, while velocity-actuated scenes interpret it
+as a target joint velocity over one control interval.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ class FrankaMujocoConfig:
     # Action scaling
     pos_action_scale: float = 0.05      # metres per unit action
     rot_action_scale: float = 0.1       # radians per unit action
+    actuator_mode: str = "position"     # position | velocity
 
     # Simulation
     n_substeps: int = 20                 # mj_step calls per env.step()
@@ -109,6 +111,17 @@ class FrankaMujocoEnv(gym.Env):
         limited = self.model.jnt_limited[self._joint_ids].astype(bool)
         self._q_low = np.where(limited, self.model.jnt_range[self._joint_ids, 0], -2 * np.pi)
         self._q_high = np.where(limited, self.model.jnt_range[self._joint_ids, 1], 2 * np.pi)
+        ctrl_limited = self.model.actuator_ctrllimited[self._actuator_ids].astype(bool)
+        self._ctrl_low = np.where(
+            ctrl_limited,
+            self.model.actuator_ctrlrange[self._actuator_ids, 0],
+            -np.inf,
+        )
+        self._ctrl_high = np.where(
+            ctrl_limited,
+            self.model.actuator_ctrlrange[self._actuator_ids, 1],
+            np.inf,
+        )
 
         # --- Action / observation spaces ---
         self.action_space = spaces.Box(
@@ -145,7 +158,15 @@ class FrankaMujocoEnv(gym.Env):
         mujoco.mj_resetData(self.model, self.data)
 
         self.data.qpos[self._qpos_addrs] = self.cfg.home_qpos.copy()
-        self.data.ctrl[self._actuator_ids] = self.cfg.home_qpos.copy()
+        if self.cfg.actuator_mode == "position":
+            self.data.ctrl[self._actuator_ids] = self.cfg.home_qpos.copy()
+        elif self.cfg.actuator_mode == "velocity":
+            self.data.ctrl[self._actuator_ids] = np.zeros(self._nq, dtype=np.float64)
+        else:
+            raise ValueError(
+                f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
+                "Expected 'position' or 'velocity'."
+            )
         mujoco.mj_forward(self.model, self.data)
 
         obs = self._get_obs()
@@ -160,9 +181,10 @@ class FrankaMujocoEnv(gym.Env):
 
         q_current = self.data.qpos[self._qpos_addrs].copy()
         dq = self._cartesian_to_joint(cart_delta)
-        q_target = np.clip(q_current + dq, self._q_low, self._q_high)
-
-        self.data.ctrl[self._actuator_ids] = q_target
+        self.data.ctrl[self._actuator_ids] = self._joint_delta_to_control(
+            q_current=q_current,
+            dq=dq,
+        )
 
         for _ in range(self.cfg.n_substeps):
             mujoco.mj_step(self.model, self.data)
@@ -253,6 +275,30 @@ class FrankaMujocoEnv(gym.Env):
         JJT = J @ J.T + lam * np.eye(6)
         dq = J.T @ np.linalg.solve(JJT, cart_delta)
         return dq
+
+    def _joint_delta_to_control(
+        self,
+        *,
+        q_current: np.ndarray,
+        dq: np.ndarray,
+    ) -> np.ndarray:
+        """Convert a joint displacement command into actuator control."""
+        q_target = np.clip(q_current + dq, self._q_low, self._q_high)
+
+        if self.cfg.actuator_mode == "position":
+            return q_target
+
+        if self.cfg.actuator_mode == "velocity":
+            qdot_target = (q_target - q_current) / max(
+                self.cfg.control_dt,
+                self.cfg.sim_timestep,
+            )
+            return np.clip(qdot_target, self._ctrl_low, self._ctrl_high)
+
+        raise ValueError(
+            f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
+            "Expected 'position' or 'velocity'."
+        )
 
     # ------------------------------------------------------------------
     # Reward / termination (override in subclass)
