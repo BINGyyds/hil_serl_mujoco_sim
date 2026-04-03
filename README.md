@@ -47,7 +47,7 @@
 ```bash
 cd sim
 bash setup_env_mac.sh
-conda activate robot_controllers_mujoco
+conda activate sim_env
 ```
 
 ### Ubuntu
@@ -55,7 +55,7 @@ conda activate robot_controllers_mujoco
 ```bash
 cd sim
 bash setup_env_ubuntu.sh
-conda activate robot_controllers_mujoco
+conda activate sim_env
 ```
 
 这两个脚本都会做这些事情：

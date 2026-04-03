@@ -31,7 +31,7 @@ class FrankaMujocoConfig:
 
     # Joint names in the MJCF
     arm_joint_names: Tuple[str, ...] = tuple(f"joint{i+1}" for i in range(7))
-    arm_actuator_names: Tuple[str, ...] = tuple(f"actuator{i+1}" for i in range(7))
+    arm_actuator_names: Tuple[str, ...] = tuple(f"joint{i+1}_ctrl" for i in range(7))
     ee_site_name: str = "attachment_site"
 
     # Home joint configuration (Panda default)

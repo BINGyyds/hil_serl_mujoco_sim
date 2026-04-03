@@ -7,8 +7,8 @@ from typing import Optional, Tuple
 class ModeConfig:
     """运行模式配置。"""
 
-    input_mode: str = "planned"
-    control_mode: str = "effort"
+    input_mode: str = "planned"             # 输入模式：planned,spacemouse
+    control_mode: str = "effort"            # 控制模式：position,effort,velocity
     allow_missing_spacemouse: bool = False
 
 
@@ -67,8 +67,8 @@ class TeleopConfig:
 
     spacemouse_deadzone: float = 0.05
     spacemouse_filter_alpha: float = 0.25
-    max_reference_linear_velocity: float = 0.04
-    max_reference_angular_velocity: float = 0.08
+    max_reference_linear_velocity: float = 0.05
+    max_reference_angular_velocity: float = 0.1
     pose_error_gain: float = 25.0
     ik_damping: float = 1e-4
     nullspace_gain: float = 0.15
