@@ -134,7 +134,7 @@ class TaskSpaceVelocityController:
         target_rotation = target_transform[:3, :3]
         target_position = target_transform[:3, 3]
 
-        target_position = target_position + target_rotation @ delta_translation_local
+        target_position = target_position + delta_translation_local
         target_rotation = target_rotation @ Rotation.from_rotvec(
             delta_rotation_local
         ).as_matrix()
