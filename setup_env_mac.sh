@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-sim_env}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCH="$(uname -m)"
 CONDA_CHANNEL_ARGS=(--override-channels -c conda-forge -c defaults)

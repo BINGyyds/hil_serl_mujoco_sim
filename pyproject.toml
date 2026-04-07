@@ -7,17 +7,17 @@ name = "sim_env"
 version = "0.1.0"
 description = "Local MuJoCo simulation and control stack for the Franka Panda"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-  "easyhid",
+  "easyhid==0.0.10",
   "gymnasium==0.29.1",
-  "imageio>=2.31.1",
-  "matplotlib",
-  "mujoco>=3.0.0",
-  "numpy>=1.24.3",
-  "opencv-python",
-  "pandas",
-  "scipy>=1.11.0",
+  "imageio==2.37.0",
+  "matplotlib==3.10.1",
+  "mujoco==3.6.0",
+  "numpy==1.26.4",
+  "opencv-python==4.10.0.84",
+  "pandas==2.2.3",
+  "scipy==1.15.3",
 ]
 
 [tool.setuptools]
