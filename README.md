@@ -1,42 +1,42 @@
 # robot_controllers_mujoco
 
-本目录是本地 MuJoCo 仿真侧仓库，负责：
+`sim/` 是本工作区的 MuJoCo 仿真与示教侧仓库。它提供：
 
-- Franka Panda MJCF 模型
+- Franka Panda MJCF 模型与资产
+- `robot_controllers_mujoco` Python 包
 - MuJoCo Gymnasium 环境
-- SpaceMouse 接入
+- SpaceMouse 输入接入
 - 本地控制器与示教调试
-- 插入任务 demo 录制
+- insertion demo 录制
 
-当前 Python 包名是 `robot_controllers_mujoco`。
+## 当前范围
 
-## 当前主线
+当前主线已经收敛到 insertion 任务，不再维护 reach 作为默认任务。仿真侧的默认基线为：
 
-当前不再以 `reach` 任务作为主线，默认任务改为：
+- 环境：`FrankaInsertionEnv`
+- 控制后端：velocity control
+- 基准模型：`panda_nohand_velocity.xml`
 
-- `FrankaInsertionEnv`
-- `panda_nohand_velocity.xml`
-- `SpaceMouse + velocity control`
+固定约束：
 
-需要固定的一条约束是：
+- 现在以及后续所有涉及 SpaceMouse 控制的 MuJoCo 场景，都以 `panda_nohand_velocity.xml` 为基准。
 
-- 现在以及后续所有涉及 SpaceMouse 控制的 MuJoCo 场景，都以 `panda_nohand_velocity.xml` 为基准
-
-## 目录说明
+## 目录结构
 
 - `robot_controllers_mujoco/envs`
   - MuJoCo Gymnasium 环境
-  - 当前主用 `FrankaInsertionEnv`
+  - 当前主用环境：`FrankaInsertionEnv`
 - `robot_controllers_mujoco/configs`
-  - 任务默认配置
-  - 当前主用 `make_insertion_config()`
+  - 任务配置工厂
+  - 当前主用配置：`make_insertion_config()`
 - `robot_controllers_mujoco/models/franka_panda`
-  - Panda MJCF 模型与 mesh
-  - 包含 `position` / `effort` / `velocity` 三套 nohand 控制模型
+  - Panda MJCF 模型与 mesh 资源
+- `robot_controllers_mujoco/controllers`
+  - task-space velocity controller
 - `robot_controllers_mujoco/spacemouse`
-  - SpaceMouse 输入驱动与兼容层
+  - SpaceMouse 驱动与兼容层
 - `robot_controllers_mujoco/robot`
-  - 本地控制器、Pinocchio 运动学/动力学、数据记录与视频写入
+  - 本地控制器、Pinocchio 模型、数据记录与视频写入
 - `scripts/record_demos_mujoco.py`
   - 使用 SpaceMouse 录制 insertion demos
 
@@ -45,42 +45,49 @@
 ### macOS
 
 ```bash
-cd sim
-bash setup_env_mac.sh
+cd /home/lrb/Workspace/hil_serl_mujoco/sim
+./setup_env_mac.sh
 conda activate sim_env
 ```
 
 ### Ubuntu
 
 ```bash
-cd sim
-bash setup_env_ubuntu.sh
+cd /home/lrb/Workspace/hil_serl_mujoco/sim
+./setup_env_ubuntu.sh
 conda activate sim_env
 ```
 
-## 快速验证
+## 基本验证
 
-### 1. 验证 insertion env
+### 验证 insertion 环境
 
 ```bash
 python -c "from robot_controllers_mujoco.configs.insertion_config import make_insertion_config; from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv; env = FrankaInsertionEnv(config=make_insertion_config()); obs, _ = env.reset(); print(obs['state'].keys()); env.close()"
 ```
 
-### 2. 启动本地控制器
+### 启动本地控制器
 
 无 SpaceMouse 调试：
 
 ```bash
-python -m robot_controllers_mujoco.robot.main --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse
+python -m robot_controllers_mujoco.robot.main \
+  --input-mode spacemouse \
+  --control-mode velocity \
+  --allow-missing-spacemouse
 ```
 
-离线规划模式：
+离线规划测试：
 
 ```bash
-python -m robot_controllers_mujoco.robot.main --input-mode planned --control-mode effort
+python -m robot_controllers_mujoco.robot.main \
+  --input-mode planned \
+  --control-mode effort
 ```
 
-### 3. 录制 insertion demos
+## 录制 insertion demos
+
+使用真实 SpaceMouse 录制 demo：
 
 ```bash
 python scripts/record_demos_mujoco.py \
@@ -88,13 +95,7 @@ python scripts/record_demos_mujoco.py \
   --num_demos 25
 ```
 
-录制现在只保留真实 SpaceMouse 路径：
-
-- 使用 `panda_nohand_velocity.xml` 作为基准场景
-- `expert action -> env.step(action)` 与本地 [`robot_controller.py`](/home/lrb/Workspace/hil_serl_mujoco/sim/robot_controllers_mujoco/robot/robot_controller.py) 共用同一套 task-space velocity controller
-- 正式训练前建议先录 20 到 50 条成功 demo
-
-如果你想看录制过程：
+如果需要观察录制过程：
 
 ```bash
 python scripts/record_demos_mujoco.py \
@@ -104,14 +105,21 @@ python scripts/record_demos_mujoco.py \
   --realtime
 ```
 
-## SpaceMouse 使用说明
+录制脚本当前仅保留真实控制路径：
+
+- 输入：SpaceMouse 6D action
+- 环境：`FrankaInsertionEnv`
+- 控制器：与本地 `robot_controller` 共享的 task-space velocity controller
+- 输出：可直接供 learner 加载的 demo `pkl`
+
+## SpaceMouse 说明
 
 ### macOS
 
-- 需要先安装 Homebrew `hidapi`
-- Apple Silicon 推荐使用 patched `easyhid` fork
-- 如果安装了 3Dconnexion 官方驱动，运行前建议退出 `3DconnexionHelper`
-- 当前仓库内置了 macOS 下的 `hidapi` 预加载逻辑，优先尝试 `/opt/homebrew` 和 `/usr/local`
+要求：
+
+- 通过 Homebrew 安装 `hidapi`
+- Python 环境安装 `easyhid`
 
 排查命令：
 
@@ -121,10 +129,14 @@ python -c "from easyhid import Enumeration; print('easyhid backend ok')"
 pgrep -lf '3Dconnexion|3Dx|3dconnexion'
 ```
 
+如果安装了 3Dconnexion 官方驱动，运行前建议退出相关后台进程。
+
 ### Ubuntu
 
-- 需要系统安装 `hidapi`
-- 如果普通用户无法读取设备，需要安装仓库内的 `99-spacemouse.rules`
+要求：
+
+- 系统安装 `hidapi`
+- 普通用户访问设备时，安装 `99-spacemouse.rules`
 
 安装 udev 规则：
 
@@ -136,17 +148,17 @@ sudo udevadm trigger
 
 ## 与训练仓的关系
 
-这个仓库只负责：
+`sim/` 只负责：
 
 - MuJoCo 仿真模型
 - Gym 环境
 - SpaceMouse 输入
-- 本地 demo / teleop / 调试
+- 本地控制器与调试
+- demo 录制
 
-如果要跑本地 actor + 远程 learner，仍然需要旁边的 `train/`。
+分布式训练由旁边的 `train/` 负责。完整部署说明见父仓 [`README.md`](/home/lrb/Workspace/hil_serl_mujoco/README.md)。
 
 ## 常用入口
 
-- 控制器：`python -m robot_controllers_mujoco.robot.main`
-- 录制 demo：`python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25`
-- 训练部署说明：看父仓 [`README.md`](/home/lrb/Workspace/hil_serl_mujoco/README.md)
+- 本地控制器：`python -m robot_controllers_mujoco.robot.main`
+- 录制 demos：`python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25`
