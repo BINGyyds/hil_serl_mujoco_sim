@@ -60,6 +60,23 @@ class RobotController:
             joint_limit_margin=config.teleop.joint_limit_margin,
             lower_position_limits=self.robot_model.lower_position_limits,
             upper_position_limits=self.robot_model.upper_position_limits,
+            enable_admittance=config.teleop.enable_admittance,
+            wrench_filter_alpha=config.teleop.wrench_filter_alpha,
+            force_deadband=np.asarray(config.teleop.force_deadband, dtype=np.float64),
+            torque_deadband=np.asarray(config.teleop.torque_deadband, dtype=np.float64),
+            max_force_world=np.asarray(config.teleop.max_force_world, dtype=np.float64),
+            max_torque_world=np.asarray(config.teleop.max_torque_world, dtype=np.float64),
+            admittance_mass=np.asarray(config.teleop.admittance_mass, dtype=np.float64),
+            admittance_damping=np.asarray(config.teleop.admittance_damping, dtype=np.float64),
+            admittance_stiffness=np.asarray(
+                config.teleop.admittance_stiffness,
+                dtype=np.float64,
+            ),
+            max_compliance_linear_offset=config.teleop.max_compliance_linear_offset,
+            max_compliance_angular_offset=config.teleop.max_compliance_angular_offset,
+            max_compliance_linear_velocity=config.teleop.max_compliance_linear_velocity,
+            max_compliance_angular_velocity=config.teleop.max_compliance_angular_velocity,
+            joint_velocity_filter_alpha=config.teleop.joint_velocity_filter_alpha,
         )
 
     def run_simulation(self) -> None:
@@ -141,7 +158,7 @@ class RobotController:
 
     def _initialize_planned_mode(self) -> None:
         """初始化离线规划模式。"""
-        self.ee_tf_home = self.mujoco_interface.get_attachment_transform()
+        self.ee_tf_home = self.mujoco_interface.get_end_effector_transform()
         self.ee_tf_final = self.ee_tf_home.copy()
         self.ee_tf_final[2, 3] = 0.1
 
@@ -181,6 +198,13 @@ class RobotController:
             logger.warning("SpaceMouse 不可用，已回退到零输入 teleop 模式: %s", exc)
 
         self.reset_button_pressed = False
+        if (
+            self.config.teleop.enable_admittance
+            and not self.mujoco_interface.has_end_effector_wrench_sensors()
+        ):
+            raise RuntimeError(
+                "已启用 teleop 导纳柔顺，但当前模型未配置末端 force/torque sensors。"
+            )
         self._sync_teleop_reference_to_current_state()
 
     def _cleanup_simulation(self) -> None:
@@ -304,12 +328,16 @@ class RobotController:
             current_v,
         )
         jacobian = self.robot_model.jacobian(current_q)
+        wrench_world = None
+        if self.config.teleop.enable_admittance:
+            wrench_world = self.mujoco_interface.get_end_effector_wrench_world()
         return self.task_space_controller.compute_command(
             raw_action=raw_spacemouse_action,
             current_q=current_q,
             current_transform=current_transform,
             jacobian=jacobian,
             dt=self.config.sim.timestep,
+            wrench_world=wrench_world,
         )
 
     def _read_spacemouse_input(self) -> Tuple[np.ndarray, list]:
@@ -348,12 +376,17 @@ class RobotController:
     def _sync_teleop_reference_to_current_state(self) -> None:
         """将 teleop 参考位姿同步到 MuJoCo 当前状态。"""
         self.mujoco_interface.forward()
-        current_q, _ = self._get_current_joint_state()
-        current_transform = self.mujoco_interface.get_attachment_transform()
+        current_q, current_v = self._get_current_joint_state()
+        current_transform, _ = self._get_current_end_effector_kinematics(
+            current_q,
+            current_v,
+        )
         self.task_space_controller.reset(
             current_transform=current_transform,
             current_q=current_q,
         )
+        if self.config.teleop.enable_admittance:
+            self.mujoco_interface.tare_end_effector_wrench()
 
     def _send_joint_velocity_command_to_mujoco(
         self,

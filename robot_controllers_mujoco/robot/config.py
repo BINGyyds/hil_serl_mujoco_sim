@@ -54,8 +54,10 @@ class ModelConfig:
         f"joint{i + 1}_torque_sensor" for i in range(7)
     )
     base_site_name: str = "panda_base_site"
-    end_effector_site_name: str = "attachment_site"
-    end_effector_pos_sensor_name: str = "attachment_site_pos_sensor"
+    end_effector_site_name: str = "tool_tip_site"
+    end_effector_pos_sensor_name: Optional[str] = None
+    end_effector_force_sensor_name: Optional[str] = None
+    end_effector_torque_sensor_name: Optional[str] = None
     attachment_pos_sensor_name: str = "attachment_body_pos_sensor"
     attachment_quat_sensor_name: str = "attachment_body_quat_sensor"
     mjcf_path: Optional[Path] = None
@@ -82,6 +84,41 @@ class TeleopConfig:
         2.610,
     )
     joint_limit_margin: float = 0.05
+    enable_admittance: bool = False
+    wrench_filter_alpha: float = 0.2
+    force_deadband: Tuple[float, float, float] = (1.0, 1.0, 1.0)
+    torque_deadband: Tuple[float, float, float] = (0.05, 0.05, 0.05)
+    max_force_world: Tuple[float, float, float] = (20.0, 20.0, 20.0)
+    max_torque_world: Tuple[float, float, float] = (2.0, 2.0, 2.0)
+    admittance_mass: Tuple[float, ...] = (
+        2.0,
+        2.0,
+        3.0,
+        0.15,
+        0.15,
+        0.15,
+    )
+    admittance_damping: Tuple[float, ...] = (
+        80.0,
+        80.0,
+        110.0,
+        8.0,
+        8.0,
+        8.0,
+    )
+    admittance_stiffness: Tuple[float, ...] = (
+        80.0,
+        80.0,
+        140.0,
+        10.0,
+        10.0,
+        10.0,
+    )
+    max_compliance_linear_offset: float = 0.02
+    max_compliance_angular_offset: float = 0.2
+    max_compliance_linear_velocity: float = 0.10
+    max_compliance_angular_velocity: float = 0.5
+    joint_velocity_filter_alpha: float = 1.0
 
 
 @dataclass
@@ -179,10 +216,16 @@ class ProjectConfig:
 
         if self.mode.control_mode == "position":
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_position.xml"
+            self.model.end_effector_force_sensor_name = None
+            self.model.end_effector_torque_sensor_name = None
         elif self.mode.control_mode == "effort":
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_effort.xml"
+            self.model.end_effector_force_sensor_name = None
+            self.model.end_effector_torque_sensor_name = None
         elif self.mode.control_mode == "velocity":
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_velocity.xml"
+            self.model.end_effector_force_sensor_name = "tool_tip_force_sensor"
+            self.model.end_effector_torque_sensor_name = "tool_tip_torque_sensor"
         else:
             raise ValueError(
                 "control_mode 仅支持 'position'、'effort' 或 'velocity'。"

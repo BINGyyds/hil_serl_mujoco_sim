@@ -89,6 +89,41 @@ class InsertionConfig(FrankaMujocoConfig):
         2.610,
     )
     joint_limit_margin: float = 0.05
+    enable_admittance: bool = False
+    wrench_filter_alpha: float = 0.2
+    force_deadband: Tuple[float, float, float] = (1.0, 1.0, 1.0)
+    torque_deadband: Tuple[float, float, float] = (0.05, 0.05, 0.05)
+    max_force_world: Tuple[float, float, float] = (20.0, 20.0, 20.0)
+    max_torque_world: Tuple[float, float, float] = (2.0, 2.0, 2.0)
+    admittance_mass: Tuple[float, ...] = (
+        2.0,
+        2.0,
+        3.0,
+        0.15,
+        0.15,
+        0.15,
+    )
+    admittance_damping: Tuple[float, ...] = (
+        80.0,
+        80.0,
+        110.0,
+        8.0,
+        8.0,
+        8.0,
+    )
+    admittance_stiffness: Tuple[float, ...] = (
+        80.0,
+        80.0,
+        140.0,
+        10.0,
+        10.0,
+        10.0,
+    )
+    max_compliance_linear_offset: float = 0.02
+    max_compliance_angular_offset: float = 0.2
+    max_compliance_linear_velocity: float = 0.10
+    max_compliance_angular_velocity: float = 0.5
+    joint_velocity_filter_alpha: float = 1.0
 
 
 class FrankaInsertionEnv(FrankaMujocoEnv):
@@ -119,6 +154,20 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             joint_limit_margin=self.insertion_cfg.joint_limit_margin,
             lower_position_limits=self._q_low,
             upper_position_limits=self._q_high,
+            enable_admittance=self.insertion_cfg.enable_admittance,
+            wrench_filter_alpha=self.insertion_cfg.wrench_filter_alpha,
+            force_deadband=np.asarray(self.insertion_cfg.force_deadband, dtype=np.float64),
+            torque_deadband=np.asarray(self.insertion_cfg.torque_deadband, dtype=np.float64),
+            max_force_world=np.asarray(self.insertion_cfg.max_force_world, dtype=np.float64),
+            max_torque_world=np.asarray(self.insertion_cfg.max_torque_world, dtype=np.float64),
+            admittance_mass=np.asarray(self.insertion_cfg.admittance_mass, dtype=np.float64),
+            admittance_damping=np.asarray(self.insertion_cfg.admittance_damping, dtype=np.float64),
+            admittance_stiffness=np.asarray(self.insertion_cfg.admittance_stiffness, dtype=np.float64),
+            max_compliance_linear_offset=self.insertion_cfg.max_compliance_linear_offset,
+            max_compliance_angular_offset=self.insertion_cfg.max_compliance_angular_offset,
+            max_compliance_linear_velocity=self.insertion_cfg.max_compliance_linear_velocity,
+            max_compliance_angular_velocity=self.insertion_cfg.max_compliance_angular_velocity,
+            joint_velocity_filter_alpha=self.insertion_cfg.joint_velocity_filter_alpha,
         )
 
         state_spaces = dict(self._base_state_spaces)

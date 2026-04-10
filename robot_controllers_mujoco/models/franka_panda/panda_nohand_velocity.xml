@@ -267,6 +267,9 @@
     <actuatorfrc name="joint6_torque_sensor" actuator="joint6_ctrl"/>
     <actuatorfrc name="joint7_torque_sensor" actuator="joint7_ctrl"/>
 
+    <force name="tool_tip_force_sensor" site="tool_tip_site"/>
+    <torque name="tool_tip_torque_sensor" site="tool_tip_site"/>
+
     <framepos name="attachment_site_pos_sensor" objtype="site" objname="attachment_site"/>
     <framepos name="attachment_body_pos_sensor" objtype="site" objname="attachment_site"/>
     <framequat name="attachment_body_quat_sensor" objtype="site" objname="attachment_site"/>

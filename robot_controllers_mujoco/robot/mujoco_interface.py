@@ -39,6 +39,7 @@ class MujocoInterface:
         self.renderer: Optional[mujoco.Renderer] = None
 
         self._get_ids_from_config(config)
+        self.end_effector_wrench_bias_local = np.zeros(6, dtype=np.float64)
 
         self.camera = MjvCamera()
         mujoco.mjv_defaultCamera(self.camera)
@@ -52,6 +53,14 @@ class MujocoInterface:
         if len(self.arm_joint_names) != len(self.arm_actuator_names):
             raise ValueError("关节名与 actuator 名数量不一致，无法建立速度命令映射。")
 
+        self.arm_joint_ids = np.array(
+            [self.model.joint(name).id for name in self.arm_joint_names],
+            dtype=np.int32,
+        )
+        self.arm_dof_addrs = np.asarray(
+            self.model.jnt_dofadr[self.arm_joint_ids],
+            dtype=np.int32,
+        )
         self.arm_actuator_ids = np.array(
             [self.model.actuator(name).id for name in self.arm_actuator_names],
             dtype=np.int32,
@@ -86,9 +95,27 @@ class MujocoInterface:
             self._get_sensor_slice(name, expected_dim=1)
             for name in model_config.arm_joint_torque_sensor_names
         )
-        self.end_effector_pos_sensor_slice = self._get_sensor_slice(
-            model_config.end_effector_pos_sensor_name, expected_dim=3
-        )
+        if model_config.end_effector_pos_sensor_name:
+            self.end_effector_pos_sensor_slice = self._get_sensor_slice(
+                model_config.end_effector_pos_sensor_name,
+                expected_dim=3,
+            )
+        else:
+            self.end_effector_pos_sensor_slice = None
+        if model_config.end_effector_force_sensor_name:
+            self.end_effector_force_sensor_slice = self._get_sensor_slice(
+                model_config.end_effector_force_sensor_name,
+                expected_dim=3,
+            )
+        else:
+            self.end_effector_force_sensor_slice = None
+        if model_config.end_effector_torque_sensor_name:
+            self.end_effector_torque_sensor_slice = self._get_sensor_slice(
+                model_config.end_effector_torque_sensor_name,
+                expected_dim=3,
+            )
+        else:
+            self.end_effector_torque_sensor_slice = None
         self.attachment_pos_sensor_slice = self._get_sensor_slice(
             model_config.attachment_pos_sensor_name, expected_dim=3
         )
@@ -162,9 +189,91 @@ class MujocoInterface:
             dtype=np.float64,
         )
 
+    def has_end_effector_wrench_sensors(self) -> bool:
+        """返回末端 6D force/torque sensor 是否可用。"""
+        return (
+            self.end_effector_force_sensor_slice is not None
+            and self.end_effector_torque_sensor_slice is not None
+        )
+
+    def get_end_effector_wrench_local_raw(self) -> np.ndarray:
+        """读取末端 site 本体坐标系下的原始 6D wrench。"""
+        if not self.has_end_effector_wrench_sensors():
+            raise RuntimeError("当前模型未配置末端 force/torque sensors。")
+
+        force_local = self._read_sensor(self.end_effector_force_sensor_slice)
+        torque_local = self._read_sensor(self.end_effector_torque_sensor_slice)
+        return np.concatenate([force_local, torque_local])
+
+    def tare_end_effector_wrench(self) -> None:
+        """将当前末端本体系 6D wrench 设为零偏。"""
+        if not self.has_end_effector_wrench_sensors():
+            self.end_effector_wrench_bias_local[:] = 0.0
+            return
+        self.end_effector_wrench_bias_local = self.get_end_effector_wrench_local_raw()
+
+    def get_end_effector_wrench_local(self) -> np.ndarray:
+        """读取减去 tare 偏置后的末端本体系 6D wrench。"""
+        wrench_local_raw = self.get_end_effector_wrench_local_raw()
+        return wrench_local_raw - self.end_effector_wrench_bias_local
+
     def get_end_effector_position(self) -> np.ndarray:
         """获取末端执行器 site 的当前世界坐标。"""
-        return self._read_sensor(self.end_effector_pos_sensor_slice)
+        return np.asarray(
+            self.data.site_xpos[self.end_effector_site_id],
+            dtype=np.float64,
+        ).copy()
+
+    def get_site_transform(
+        self,
+        site_name: Optional[str] = None,
+    ) -> np.ndarray:
+        """获取任意 site 的当前世界系 4x4 齐次变换矩阵。"""
+        site_id = self.end_effector_site_id
+        if site_name is not None:
+            site_id = self.model.site(site_name).id
+
+        position = np.asarray(self.data.site_xpos[site_id], dtype=np.float64).copy()
+        rotation = np.asarray(
+            self.data.site_xmat[site_id],
+            dtype=np.float64,
+        ).reshape(3, 3).copy()
+
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = rotation
+        transform[:3, 3] = position
+        return transform
+
+    def get_end_effector_transform(self) -> np.ndarray:
+        """获取配置中末端 site 的当前世界系 4x4 齐次变换矩阵。"""
+        return self.get_site_transform()
+
+    def get_end_effector_wrench_world(self) -> np.ndarray:
+        """读取减去 tare 偏置后的末端世界系 6D wrench。"""
+        wrench_local = self.get_end_effector_wrench_local()
+        rotation = self.get_end_effector_transform()[:3, :3]
+        force_world = rotation @ wrench_local[:3]
+        torque_world = rotation @ wrench_local[3:]
+        return np.concatenate([force_world, torque_world])
+
+    def get_site_world_jacobian(
+        self,
+        site_name: Optional[str] = None,
+    ) -> np.ndarray:
+        """返回指定 site 在世界系下的 6x7 Jacobian。"""
+        site_id = self.end_effector_site_id
+        if site_name is not None:
+            site_id = self.model.site(site_name).id
+
+        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, site_id)
+        return np.vstack(
+            [
+                jacp[:, self.arm_dof_addrs],
+                jacr[:, self.arm_dof_addrs],
+            ]
+        )
 
     def get_attachment_pose(self) -> Tuple[np.ndarray, np.ndarray]:
         """获取末端 attachment body 的当前世界位置和四元数姿态。
