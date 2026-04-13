@@ -1,5 +1,6 @@
 import threading
 import time
+import platform
 import numpy as np
 from typing import Tuple
 
@@ -43,6 +44,15 @@ class SpaceMouseExpert:
                     " 或当前环境无法找到它。请先修复本机 hidapi，再连接 SpaceMouse。"
                 ) from exc
             if "Failed to open device" in message:
+                if platform.system() == "Linux":
+                    raise RuntimeError(
+                        "SpaceMouse 已被枚举到，但当前用户无法打开 hidraw 设备。"
+                        " 在 Ubuntu/Linux 上通常是 udev 权限规则未安装或设备插入早于规则刷新。"
+                        " 请在 sim 目录执行："
+                        " `sudo install -m 0644 99-spacemouse.rules /etc/udev/rules.d/99-spacemouse.rules`，"
+                        " 然后执行 `sudo udevadm control --reload-rules` 和"
+                        " `sudo udevadm trigger --subsystem-match=hidraw`，最后拔插一次 SpaceMouse。"
+                    ) from exc
                 raise RuntimeError(
                     "SpaceMouse 已被枚举到，但打开设备失败。"
                     " 在 Apple Silicon macOS 上，请优先使用 `bglopez/python-easyhid` 这个 patched easyhid fork；"

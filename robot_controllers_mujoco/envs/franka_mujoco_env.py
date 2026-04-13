@@ -49,6 +49,7 @@ class FrankaMujocoConfig:
     n_substeps: int = 20                 # mj_step calls per env.step()
     sim_timestep: float = 0.002          # MuJoCo dt
     control_dt: float = 0.04            # = n_substeps * sim_timestep  (25 Hz)
+    enable_gravity_compensation: bool = False
 
     # Rendering
     render_width: int = 640
@@ -186,8 +187,7 @@ class FrankaMujocoEnv(gym.Env):
             dq=dq,
         )
 
-        for _ in range(self.cfg.n_substeps):
-            mujoco.mj_step(self.model, self.data)
+        self._step_substeps()
 
         obs = self._get_obs()
         reward = self._compute_reward(obs)
@@ -299,6 +299,26 @@ class FrankaMujocoEnv(gym.Env):
             f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
             "Expected 'position' or 'velocity'."
         )
+
+    def _step_substeps(self) -> None:
+        if self.cfg.enable_gravity_compensation:
+            for _ in range(self.cfg.n_substeps):
+                mujoco.mj_step1(self.model, self.data)
+                self._apply_gravity_compensation()
+                mujoco.mj_step2(self.model, self.data)
+            return
+
+        for _ in range(self.cfg.n_substeps):
+            mujoco.mj_step(self.model, self.data)
+
+    def _apply_gravity_compensation(self) -> None:
+        if not self.cfg.enable_gravity_compensation:
+            return
+
+        self.data.qfrc_applied[:] = 0.0
+        self.data.qfrc_applied[self._dof_addrs] = self.data.qfrc_bias[
+            self._dof_addrs
+        ]
 
     # ------------------------------------------------------------------
     # Reward / termination (override in subclass)

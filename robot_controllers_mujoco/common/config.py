@@ -18,6 +18,7 @@ class SimulationConfig:
 
     simulation_duration: float = 50.0
     timestep: float = 0.001
+    enable_gravity_compensation: bool = False
     sync_to_real_time: bool = True
     real_time_factor: float = 1.0
 
@@ -218,14 +219,17 @@ class ProjectConfig:
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_position.xml"
             self.model.end_effector_force_sensor_name = None
             self.model.end_effector_torque_sensor_name = None
+            self.sim.enable_gravity_compensation = False
         elif self.mode.control_mode == "effort":
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_effort.xml"
             self.model.end_effector_force_sensor_name = None
             self.model.end_effector_torque_sensor_name = None
+            self.sim.enable_gravity_compensation = False
         elif self.mode.control_mode == "velocity":
             self.model.mjcf_path = franka_mjcf_root / "panda_nohand_velocity.xml"
             self.model.end_effector_force_sensor_name = "tool_tip_force_sensor"
             self.model.end_effector_torque_sensor_name = "tool_tip_torque_sensor"
+            self.sim.enable_gravity_compensation = True
         else:
             raise ValueError(
                 "control_mode 仅支持 'position'、'effort' 或 'velocity'。"

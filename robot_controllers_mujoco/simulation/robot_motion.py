@@ -1,13 +1,15 @@
 # robot_motion.py
 
 import logging
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import numpy as np
 from scipy.interpolate import BSpline, make_interp_spline
 
 if TYPE_CHECKING:
-    from robot_controllers_mujoco.robot.robot_model import RobotModel
+    from robot_controllers_mujoco.simulation.robot_model import RobotModel
+
+IKSolver = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ class RobotMotion:
         q_init: np.ndarray,
         num_samples: int,
         spline_num_knots: int | None = None,
+        ik_solver: Optional[IKSolver] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """规划笛卡尔末端位姿轨迹，并输出对应的平滑关节轨迹序列。
 
@@ -69,6 +72,7 @@ class RobotMotion:
             q_init: 第一个采样点的关节初值，形状为 (7,)。
             num_samples: 采样点数，至少为 2。
             spline_num_knots: 样条拟合使用的关节轨迹节点数；为 None 时自动选择。
+            ik_solver: 可选 IK 函数，签名为 ``ik_solver(transform, q_seed)``。
 
         Returns:
             q_traj: 关节角轨迹，形状为 (num_samples, 7)。
@@ -84,15 +88,22 @@ class RobotMotion:
         target_tf = np.asarray(target_transform, dtype=np.float64).reshape((4, 4))
         q_seed = np.asarray(q_init, dtype=np.float64).reshape((7,)).copy()
 
-        time_samples = np.linspace(0.0, tf, num_samples, dtype=np.float64)
-        s, _, _ = self._quintic_scalars(time_samples, tf)
+        output_time_samples = np.linspace(0.0, tf, num_samples, dtype=np.float64)
+        if spline_num_knots is None:
+            ik_num_samples = min(num_samples, max(8, int(np.ceil(tf * 20.0)) + 1))
+        else:
+            ik_num_samples = min(num_samples, max(2, int(spline_num_knots)))
+
+        ik_time_samples = np.linspace(0.0, tf, ik_num_samples, dtype=np.float64)
+        s, _, _ = self._quintic_scalars(ik_time_samples, tf)
 
         p0 = start_tf[:3, 3]
         pf = target_tf[:3, 3]
         q0 = self._rotation_matrix_to_quaternion(start_tf[:3, :3])
         qf = self._rotation_matrix_to_quaternion(target_tf[:3, :3])
 
-        q_traj_raw = np.zeros((num_samples, 7), dtype=np.float64)
+        q_traj_raw = np.zeros((ik_num_samples, 7), dtype=np.float64)
+        solve_ik = ik_solver or robot_model.inverse_kinematics
 
         for i, alpha in enumerate(s):
             transform = np.eye(4, dtype=np.float64)
@@ -101,12 +112,14 @@ class RobotMotion:
             quat = self._slerp(q0, qf, float(alpha))
             transform[:3, :3] = self._quaternion_to_rotation_matrix(quat)
 
-            q_solution = robot_model.inverse_kinematics(transform, q_init=q_seed)
+            q_solution = solve_ik(transform, q_seed)
             q_traj_raw[i] = q_solution
             q_seed = q_solution
 
-        self._build_joint_splines(time_samples, q_traj_raw, tf, spline_num_knots)
-        q_traj, qd_traj, qdd_traj = self.evaluate_joint_trajectory_array(time_samples)
+        self._build_joint_splines(ik_time_samples, q_traj_raw, tf, None)
+        q_traj, qd_traj, qdd_traj = self.evaluate_joint_trajectory_array(
+            output_time_samples
+        )
         return q_traj, qd_traj, qdd_traj
 
     def evaluate_joint_trajectory(

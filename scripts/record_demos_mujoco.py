@@ -29,8 +29,7 @@ from robot_controllers_mujoco.envs.wrappers import MujocoSERLObsWrapper
 from robot_controllers_mujoco.spacemouse.spacemouse_expert import SpaceMouseExpert
 
 
-def make_expert(
-):
+def make_expert():
     """Create the SpaceMouse expert used for real demo recording."""
     return SpaceMouseExpert()
 
@@ -68,6 +67,23 @@ def main() -> None:
         action="store_true",
         help="按 env.control_dt 近似做实时节奏推进，主要用于配合 --render-human 观察。",
     )
+    parser.add_argument(
+        "--max_episode_steps",
+        type=int,
+        default=1000,
+        help="单条 demo 最多允许的环境步数。默认 1000 步约 40 秒。",
+    )
+    parser.add_argument(
+        "--debug-spacemouse",
+        action="store_true",
+        help="周期性打印 SpaceMouse 动作和按钮，用于确认输入是否生效。",
+    )
+    parser.add_argument(
+        "--debug-interval",
+        type=float,
+        default=0.5,
+        help="--debug-spacemouse 的打印间隔秒数。",
+    )
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -84,7 +100,10 @@ def main() -> None:
     ]
 
     render_mode: Optional[str] = "human" if args.render_human else None
-    raw_env = FrankaInsertionEnv(config=make_insertion_config(), render_mode=render_mode)
+    raw_env = FrankaInsertionEnv(
+        config=make_insertion_config(max_episode_steps=args.max_episode_steps),
+        render_mode=render_mode,
+    )
     env = MujocoSERLObsWrapper(raw_env, proprio_keys=proprio_keys)
     expert = make_expert()
 
@@ -95,6 +114,8 @@ def main() -> None:
     print(f"Recording {args.num_demos} insertion demonstrations.")
     print("  SpaceMouse controls the tool tip (6 DOF).")
     print("  RIGHT button = save successful episode | LEFT button = discard/reset")
+    print(f"  Max episode steps: {args.max_episode_steps}")
+    print(f"  Action scale: {args.action_scale}")
     if args.render_human:
         print("  Human viewer enabled.")
     else:
@@ -103,15 +124,28 @@ def main() -> None:
 
     obs, _ = env.reset()
     maybe_render(env, args.render_human)
+    last_debug_print = 0.0
 
     try:
         while demos_saved < args.num_demos:
             step_start = time.perf_counter()
             expert_action, buttons = expert.get_action()
-            left_pressed = bool(buttons[0])
-            right_pressed = bool(buttons[1])
+            left_pressed = bool(buttons[0]) if len(buttons) > 0 else False
+            right_pressed = bool(buttons[1]) if len(buttons) > 1 else False
 
-            action = expert_action[:6] * args.action_scale
+            action = np.clip(expert_action[:6] * args.action_scale, -1.0, 1.0)
+            if (
+                args.debug_spacemouse
+                and step_start - last_debug_print >= args.debug_interval
+            ):
+                action_text = np.array2string(
+                    action,
+                    precision=3,
+                    suppress_small=True,
+                )
+                print(f"  [INPUT] action={action_text} buttons={buttons}", flush=True)
+                last_debug_print = step_start
+
             next_obs, reward, done, truncated, info = env.step(action)
             maybe_render(env, args.render_human)
 
@@ -130,6 +164,9 @@ def main() -> None:
             should_discard = left_pressed or done or truncated
 
             if should_save:
+                if episode_transitions:
+                    episode_transitions[-1]["dones"] = True
+                    episode_transitions[-1]["masks"] = 0.0
                 all_demos.extend(episode_transitions)
                 demos_saved += 1
                 print(
@@ -171,8 +208,11 @@ def main() -> None:
         env.close()
 
     if all_demos:
-        with open(args.output, "wb") as file:
+        output_path = Path(args.output)
+        temp_output_path = output_path.with_name(f".{output_path.name}.tmp")
+        with temp_output_path.open("wb") as file:
             pkl.dump(all_demos, file)
+        os.replace(temp_output_path, output_path)
         print(
             f"\nSaved {demos_saved} insertion demos "
             f"({len(all_demos)} transitions) to {args.output}"

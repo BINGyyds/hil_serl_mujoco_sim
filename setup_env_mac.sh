@@ -5,7 +5,7 @@ ENV_NAME="${ENV_NAME:-sim_env}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCH="$(uname -m)"
-CONDA_CHANNEL_ARGS=(--override-channels -c conda-forge -c defaults)
+CONDA_CHANNEL_ARGS=(--override-channels -c conda-forge)
 
 info()  { echo -e "\033[92m[INFO]\033[0m $*"; }
 warn()  { echo -e "\033[93m[WARN]\033[0m $*"; }
@@ -35,7 +35,7 @@ eval "$($CONDA_BIN shell.bash hook 2>/dev/null)" \
     || eval "$($CONDA_BIN shell.zsh hook 2>/dev/null)" \
     || true
 
-info "Conda 安装将忽略本机 .condarc，自带强制使用官方 channels: conda-forge + defaults"
+info "Conda 安装将忽略本机 .condarc，只使用 conda-forge，避免 defaults channel 的 Anaconda ToS 阻塞"
 
 if conda env list | grep -qw "$ENV_NAME"; then
     warn "Conda 环境 '$ENV_NAME' 已存在，跳过创建。"
@@ -58,7 +58,7 @@ python -m pip install --upgrade pip setuptools wheel
 
 info "安装 Pinocchio"
 conda install "${CONDA_CHANNEL_ARGS[@]}" -n "$ENV_NAME" pinocchio -y \
-    || warn "Pinocchio 安装失败；如果后续运行 robot.main 报错，请单独处理 conda-forge pinocchio。"
+    || warn "Pinocchio 安装失败；如果后续运行 teleop/debug 入口报错，请单独处理 conda-forge pinocchio。"
 
 info "以 editable 方式安装 robot_controllers_mujoco"
 python -m pip install -e "$PROJECT_DIR"
@@ -105,6 +105,6 @@ python -c "from robot_controllers_mujoco.spacemouse.spacemouse_expert import Spa
 echo
 info "环境已准备完成。"
 info "激活环境: conda activate $ENV_NAME"
-info "控制器入口: python -m robot_controllers_mujoco.robot.main --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
+info "控制器入口: python scripts/debug/teleop_main.py --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
 info "录制 demo: python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25"
 warn "如果安装了 3Dconnexion 官方驱动，运行前建议先退出 3DconnexionHelper。"

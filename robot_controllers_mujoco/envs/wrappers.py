@@ -44,7 +44,8 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
 
     def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
         expert_a, buttons = self.expert.get_action()
-        self.left, self.right = bool(buttons[0]), bool(buttons[1])
+        self.left = bool(buttons[0]) if len(buttons) > 0 else False
+        self.right = bool(buttons[1]) if len(buttons) > 1 else False
         expert_a = expert_a[:6] * self.action_scale
 
         intervened = np.linalg.norm(expert_a) > 0.001 or self.left or self.right

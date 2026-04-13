@@ -31,14 +31,18 @@
   - 当前主用配置：`make_insertion_config()`
 - `robot_controllers_mujoco/models/franka_panda`
   - Panda MJCF 模型与 mesh 资源
-- `robot_controllers_mujoco/controllers`
-  - task-space velocity controller
+- `robot_controllers_mujoco/common`
+  - 通用配置、异步写入、数据管理
+- `robot_controllers_mujoco/control`
+  - task-space velocity controller、统一 teleop runtime、本地控制器封装
+- `robot_controllers_mujoco/simulation`
+  - MuJoCo 接口、Pinocchio 模型、轨迹/运动工具
 - `robot_controllers_mujoco/spacemouse`
   - SpaceMouse 驱动与兼容层
-- `robot_controllers_mujoco/robot`
-  - 本地控制器、Pinocchio 模型、数据记录与视频写入
 - `scripts/record_demos_mujoco.py`
   - 使用 SpaceMouse 录制 insertion demos
+- `scripts/debug/teleop_main.py`
+  - 手动 teleop 调试入口
 
 ## 环境安装
 
@@ -71,7 +75,7 @@ python -c "from robot_controllers_mujoco.configs.insertion_config import make_in
 无 SpaceMouse 调试：
 
 ```bash
-python -m robot_controllers_mujoco.robot.main \
+python scripts/debug/teleop_main.py \
   --input-mode spacemouse \
   --control-mode velocity \
   --allow-missing-spacemouse
@@ -80,7 +84,7 @@ python -m robot_controllers_mujoco.robot.main \
 离线规划测试：
 
 ```bash
-python -m robot_controllers_mujoco.robot.main \
+python scripts/debug/teleop_main.py \
   --input-mode planned \
   --control-mode effort
 ```
@@ -105,11 +109,26 @@ python scripts/record_demos_mujoco.py \
   --realtime
 ```
 
+如果怀疑 SpaceMouse 没有生效，可以先打开输入调试：
+
+```bash
+python scripts/record_demos_mujoco.py \
+  --output demo_data/insertion_demos.pkl \
+  --num_demos 25 \
+  --render-human \
+  --realtime \
+  --debug-spacemouse
+```
+
+终端会周期性打印 6D action 和按钮状态。录制时默认单条 demo 最长 1000 步，约 40 秒；需要更长时间可以加 `--max_episode_steps 1500`。如果动作太慢，可以小幅提高 `--action_scale`，例如 `--action_scale 1.5`。
+
 录制脚本当前仅保留真实控制路径：
 
 - 输入：SpaceMouse 6D action
 - 环境：`FrankaInsertionEnv`
-- 控制器：与本地 `robot_controller` 共享的 task-space velocity controller
+- 控制链：与本地 debug teleop 共享的 `TeleopRuntime` + task-space velocity controller
+- action 语义：平移为世界坐标系，旋转为末端本体坐标系
+- velocity 控制：显式启用 MuJoCo bias/gravity compensation
 - 输出：可直接供 learner 加载的 demo `pkl`
 
 ## SpaceMouse 说明
@@ -143,8 +162,10 @@ pgrep -lf '3Dconnexion|3Dx|3dconnexion'
 ```bash
 sudo cp 99-spacemouse.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=hidraw
 ```
+
+如果设备已经插着但仍提示 `Failed to open device`，请拔插一次 SpaceMouse 后重试。
 
 ## 与训练仓的关系
 
@@ -160,5 +181,5 @@ sudo udevadm trigger
 
 ## 常用入口
 
-- 本地控制器：`python -m robot_controllers_mujoco.robot.main`
+- 本地控制器：`python scripts/debug/teleop_main.py --input-mode spacemouse --control-mode velocity`
 - 录制 demos：`python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25`

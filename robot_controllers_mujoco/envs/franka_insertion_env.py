@@ -17,9 +17,10 @@ import numpy as np
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
-from robot_controllers_mujoco.controllers.task_space_velocity_controller import (
+from robot_controllers_mujoco.control.task_space_velocity_controller import (
     TaskSpaceVelocityController,
 )
+from robot_controllers_mujoco.control.teleop_runtime import TeleopRuntime
 from robot_controllers_mujoco.envs.franka_mujoco_env import (
     FrankaMujocoConfig,
     FrankaMujocoEnv,
@@ -169,6 +170,14 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             max_compliance_angular_velocity=self.insertion_cfg.max_compliance_angular_velocity,
             joint_velocity_filter_alpha=self.insertion_cfg.joint_velocity_filter_alpha,
         )
+        self._teleop_runtime = TeleopRuntime(
+            controller=self._task_space_controller,
+            get_control_state=self._get_teleop_control_state,
+            set_joint_velocity=self._set_joint_velocity_command,
+            step_simulation=self._step_substeps,
+            control_dt=self.cfg.control_dt,
+            enable_admittance=self.insertion_cfg.enable_admittance,
+        )
 
         state_spaces = dict(self._base_state_spaces)
         state_spaces["socket_pose"] = spaces.Box(
@@ -218,21 +227,10 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
         action = np.clip(action, -1.0, 1.0).astype(np.float64)
-        q_current = self.data.qpos[self._qpos_addrs].copy()
-        current_transform = self._get_current_transform()
-        jacobian = self._get_site_jacobian()
-
-        qdot_command = self._task_space_controller.compute_command(
-            raw_action=action,
-            current_transform=current_transform,
-            jacobian=jacobian,
-            current_q=q_current,
+        self._teleop_runtime.step(
+            action,
             dt=self.cfg.control_dt,
         )
-        self.data.ctrl[self._actuator_ids] = qdot_command
-
-        for _ in range(self.cfg.n_substeps):
-            mujoco.mj_step(self.model, self.data)
 
         obs = self._get_obs()
         reward = self._compute_reward(obs)
@@ -408,18 +406,31 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         jacp = np.zeros((3, self.model.nv), dtype=np.float64)
         jacr = np.zeros((3, self.model.nv), dtype=np.float64)
         mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)
-        return np.vstack([
+        jacobian_world = np.vstack([
             jacp[:, self._dof_addrs],
             jacr[:, self._dof_addrs],
         ])
+        _, tip_rot = self._get_ee_pose()
+        world_to_local = np.block([
+            [tip_rot.T, np.zeros((3, 3), dtype=np.float64)],
+            [np.zeros((3, 3), dtype=np.float64), tip_rot.T],
+        ])
+        return world_to_local @ jacobian_world
+
+    def _get_teleop_control_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        q_current = self.data.qpos[self._qpos_addrs].copy()
+        current_transform = self._get_current_transform()
+        jacobian = self._get_site_jacobian()
+        return q_current, current_transform, jacobian
+
+    def _set_joint_velocity_command(self, joint_velocity_command: np.ndarray) -> None:
+        self.data.ctrl[self._actuator_ids] = np.asarray(
+            joint_velocity_command,
+            dtype=np.float64,
+        )
 
     def _sync_controller_reference_to_current_state(self) -> None:
-        current_transform = self._get_current_transform()
-        current_q = self.data.qpos[self._qpos_addrs].copy()
-        self._task_space_controller.reset(
-            current_transform=current_transform,
-            current_q=current_q,
-        )
+        self._teleop_runtime.reset_reference()
 
     def _get_controller_target_pose(self) -> np.ndarray:
         target_transform = self._task_space_controller.get_target_transform()

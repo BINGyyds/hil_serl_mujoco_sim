@@ -5,5 +5,5 @@
 #   sudo cp 99-spacemouse.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules && sudo udevadm trigger
 
-SUBSYSTEM=="usb", ATTR{idVendor}=="256f", MODE="0666"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="256f", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="256f", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="256f", MODE="0666", TAG+="uaccess"

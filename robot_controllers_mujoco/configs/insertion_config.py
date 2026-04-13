@@ -21,6 +21,7 @@ def make_insertion_config(**overrides) -> InsertionConfig:
 
         sim_timestep=0.002,
         n_substeps=20,
+        enable_gravity_compensation=True,
 
         pos_action_scale=0.02,
         rot_action_scale=0.08,

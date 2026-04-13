@@ -5,8 +5,9 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 from mujoco import MjvCamera
+from scipy.spatial.transform import Rotation
 
-from robot_controllers_mujoco.robot.config import ProjectConfig
+from robot_controllers_mujoco.common.config import ProjectConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class MujocoInterface:
                 self.model.opt.timestep = sim_config.timestep
 
             self.data: mujoco.MjData = mujoco.MjData(self.model)
+            self.ik_data: mujoco.MjData = mujoco.MjData(self.model)
             logger.info("MuJoCo 模型加载成功: %s", model_config.mjcf_path)
             logger.info("仿真时间步长 (dt) 设置为: %s", self.model.opt.timestep)
         except Exception as exc:
@@ -60,6 +62,21 @@ class MujocoInterface:
         self.arm_dof_addrs = np.asarray(
             self.model.jnt_dofadr[self.arm_joint_ids],
             dtype=np.int32,
+        )
+        self.arm_qpos_addrs = np.asarray(
+            self.model.jnt_qposadr[self.arm_joint_ids],
+            dtype=np.int32,
+        )
+        limited = self.model.jnt_limited[self.arm_joint_ids].astype(bool)
+        self.arm_joint_lower_limits = np.where(
+            limited,
+            self.model.jnt_range[self.arm_joint_ids, 0],
+            -np.inf,
+        )
+        self.arm_joint_upper_limits = np.where(
+            limited,
+            self.model.jnt_range[self.arm_joint_ids, 1],
+            np.inf,
         )
         self.arm_actuator_ids = np.array(
             [self.model.actuator(name).id for name in self.arm_actuator_names],
@@ -229,13 +246,22 @@ class MujocoInterface:
         site_name: Optional[str] = None,
     ) -> np.ndarray:
         """获取任意 site 的当前世界系 4x4 齐次变换矩阵。"""
-        site_id = self.end_effector_site_id
-        if site_name is not None:
-            site_id = self.model.site(site_name).id
+        site_id = self._get_site_id(site_name)
+        return self._get_site_transform_from_data(self.data, site_id)
 
-        position = np.asarray(self.data.site_xpos[site_id], dtype=np.float64).copy()
+    def _get_site_id(self, site_name: Optional[str] = None) -> int:
+        if site_name is None:
+            return int(self.end_effector_site_id)
+        return int(self.model.site(site_name).id)
+
+    def _get_site_transform_from_data(
+        self,
+        data: mujoco.MjData,
+        site_id: int,
+    ) -> np.ndarray:
+        position = np.asarray(data.site_xpos[site_id], dtype=np.float64).copy()
         rotation = np.asarray(
-            self.data.site_xmat[site_id],
+            data.site_xmat[site_id],
             dtype=np.float64,
         ).reshape(3, 3).copy()
 
@@ -261,18 +287,110 @@ class MujocoInterface:
         site_name: Optional[str] = None,
     ) -> np.ndarray:
         """返回指定 site 在世界系下的 6x7 Jacobian。"""
-        site_id = self.end_effector_site_id
-        if site_name is not None:
-            site_id = self.model.site(site_name).id
+        site_id = self._get_site_id(site_name)
+        return self._get_site_world_jacobian_from_data(self.data, site_id)
 
+    def _get_site_world_jacobian_from_data(
+        self,
+        data: mujoco.MjData,
+        site_id: int,
+    ) -> np.ndarray:
         jacp = np.zeros((3, self.model.nv), dtype=np.float64)
         jacr = np.zeros((3, self.model.nv), dtype=np.float64)
-        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, site_id)
+        mujoco.mj_jacSite(self.model, data, jacp, jacr, site_id)
         return np.vstack(
             [
                 jacp[:, self.arm_dof_addrs],
                 jacr[:, self.arm_dof_addrs],
             ]
+        )
+
+    def get_site_local_jacobian(
+        self,
+        site_name: Optional[str] = None,
+    ) -> np.ndarray:
+        """返回指定 site 在自身 LOCAL 坐标系下的 6x7 Jacobian。"""
+        site_id = self._get_site_id(site_name)
+        transform = self._get_site_transform_from_data(self.data, site_id)
+        jacobian_world = self._get_site_world_jacobian_from_data(self.data, site_id)
+        world_to_local = np.block(
+            [
+                [transform[:3, :3].T, np.zeros((3, 3), dtype=np.float64)],
+                [np.zeros((3, 3), dtype=np.float64), transform[:3, :3].T],
+            ]
+        )
+        return world_to_local @ jacobian_world
+
+    def get_end_effector_local_jacobian(self) -> np.ndarray:
+        """返回配置中末端 site 在自身 LOCAL 坐标系下的 6x7 Jacobian。"""
+        return self.get_site_local_jacobian()
+
+    def inverse_kinematics_site(
+        self,
+        target_transform: np.ndarray,
+        q_init: np.ndarray,
+        site_name: Optional[str] = None,
+        tolerance: float = 1e-4,
+        max_iterations: int = 200,
+        damping: float = 1e-4,
+        step_scale: float = 0.6,
+        max_step_norm: float = 0.2,
+    ) -> np.ndarray:
+        """用 MuJoCo 的真实 site FK/Jacobian 求解 7 关节 IK。"""
+        target_matrix = np.asarray(target_transform, dtype=np.float64).reshape((4, 4))
+        target_position = target_matrix[:3, 3]
+        target_rotation = target_matrix[:3, :3]
+        site_id = self._get_site_id(site_name)
+        q = np.asarray(q_init, dtype=np.float64).reshape(
+            (len(self.arm_joint_ids),)
+        ).copy()
+        finite_limits = np.isfinite(self.arm_joint_lower_limits) & np.isfinite(
+            self.arm_joint_upper_limits
+        )
+        base_qpos = self.data.qpos.copy()
+
+        for _ in range(max_iterations):
+            self.ik_data.qpos[:] = base_qpos
+            self.ik_data.qvel[:] = 0.0
+            self.ik_data.qpos[self.arm_qpos_addrs] = q
+            mujoco.mj_forward(self.model, self.ik_data)
+
+            current_transform = self._get_site_transform_from_data(
+                self.ik_data,
+                site_id,
+            )
+            current_position = current_transform[:3, 3]
+            current_rotation = current_transform[:3, :3]
+            position_error = target_position - current_position
+            rotation_error = Rotation.from_matrix(
+                target_rotation @ current_rotation.T
+            ).as_rotvec()
+            error = np.concatenate([position_error, rotation_error])
+
+            if np.linalg.norm(error) < tolerance:
+                return q.copy()
+
+            jacobian = self._get_site_world_jacobian_from_data(self.ik_data, site_id)
+            jjt = jacobian @ jacobian.T
+            delta_q = jacobian.T @ np.linalg.solve(
+                jjt + damping * np.eye(6, dtype=np.float64),
+                error,
+            )
+
+            delta_norm = np.linalg.norm(delta_q)
+            if delta_norm > max_step_norm:
+                delta_q *= max_step_norm / delta_norm
+
+            q = q + step_scale * delta_q
+            q[finite_limits] = np.clip(
+                q[finite_limits],
+                self.arm_joint_lower_limits[finite_limits],
+                self.arm_joint_upper_limits[finite_limits],
+            )
+
+        raise ValueError(
+            f"MuJoCo site IK 未收敛: iterations={max_iterations}, "
+            f"target_position={target_position.tolist()}"
         )
 
     def get_attachment_pose(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -333,6 +451,15 @@ class MujocoInterface:
 
     def step(self) -> None:
         """执行一步物理仿真。"""
+        if self.config.sim.enable_gravity_compensation:
+            mujoco.mj_step1(self.model, self.data)
+            self.data.qfrc_applied[:] = 0.0
+            self.data.qfrc_applied[self.arm_dof_addrs] = self.data.qfrc_bias[
+                self.arm_dof_addrs
+            ]
+            mujoco.mj_step2(self.model, self.data)
+            return
+
         mujoco.mj_step(self.model, self.data)
 
     def launch_viewer(self) -> None:

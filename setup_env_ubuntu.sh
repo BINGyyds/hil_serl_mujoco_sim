@@ -5,7 +5,9 @@ ENV_NAME="${ENV_NAME:-sim_env}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKIP_APT="${SKIP_APT:-0}"
-CONDA_CHANNEL_ARGS=(--override-channels -c conda-forge -c defaults)
+SKIP_UDEV="${SKIP_UDEV:-0}"
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-300}"
+CONDA_CHANNEL_ARGS=(--override-channels -c conda-forge)
 
 info()  { echo -e "\033[92m[INFO]\033[0m $*"; }
 warn()  { echo -e "\033[93m[WARN]\033[0m $*"; }
@@ -33,17 +35,17 @@ eval "$($CONDA_BIN shell.bash hook 2>/dev/null)" \
     || eval "$($CONDA_BIN shell.zsh hook 2>/dev/null)" \
     || true
 
-info "Conda 安装将忽略本机 .condarc，自带强制使用官方 channels: conda-forge + defaults"
+info "Conda 安装将忽略本机 .condarc，只使用 conda-forge，避免 defaults channel 的 Anaconda ToS 阻塞"
 
 if [[ "$SKIP_APT" == "1" ]]; then
     warn "已设置 SKIP_APT=1，跳过 Ubuntu 系统依赖安装。"
 else
     info "安装 Ubuntu 系统依赖"
-    if ! sudo apt-get update; then
+    if ! sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update; then
         error "apt-get update 失败。通常是系统里存在失效的第三方源。请先修复 /etc/apt/sources.list.d 下的坏源后重试；如果这些系统依赖已经装好，也可以使用 SKIP_APT=1 ./setup_env_ubuntu.sh 跳过此步骤。"
     fi
 
-    sudo apt-get install -y \
+    sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y \
         build-essential \
         ffmpeg \
         libgl1 \
@@ -53,6 +55,17 @@ else
         libsm6 \
         libxext6 \
         libxrender1
+fi
+
+if [[ "$SKIP_UDEV" == "1" ]]; then
+    warn "已设置 SKIP_UDEV=1，跳过 SpaceMouse udev 规则安装。"
+elif [[ -f "$PROJECT_DIR/99-spacemouse.rules" ]]; then
+    info "安装 SpaceMouse udev 规则"
+    sudo install -m 0644 "$PROJECT_DIR/99-spacemouse.rules" /etc/udev/rules.d/99-spacemouse.rules
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --subsystem-match=hidraw || warn "udevadm trigger 失败；请拔插 SpaceMouse 后重试。"
+else
+    warn "未找到 99-spacemouse.rules，跳过 SpaceMouse udev 规则安装。"
 fi
 
 if conda env list | grep -qw "$ENV_NAME"; then
@@ -69,7 +82,7 @@ python -m pip install --upgrade pip setuptools wheel
 
 info "安装 Pinocchio"
 conda install "${CONDA_CHANNEL_ARGS[@]}" -n "$ENV_NAME" pinocchio -y \
-    || warn "Pinocchio 安装失败；如果后续运行 robot.main 报错，请单独处理 conda-forge pinocchio。"
+    || warn "Pinocchio 安装失败；如果后续运行 teleop/debug 入口报错，请单独处理 conda-forge pinocchio。"
 
 info "以 editable 方式安装 sim_env"
 python -m pip install -e "$PROJECT_DIR"
@@ -108,6 +121,6 @@ python -c "from robot_controllers_mujoco.spacemouse.spacemouse_expert import Spa
 echo
 info "环境已准备完成。"
 info "激活环境: conda activate $ENV_NAME"
-info "控制器入口: python -m robot_controllers_mujoco.robot.main --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
+info "控制器入口: python scripts/debug/teleop_main.py --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
 info "录制 demo: python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25"
-warn "如需普通用户访问 SpaceMouse，请安装当前目录下的 99-spacemouse.rules。"
+warn "如果 SpaceMouse 已经插着但仍无法打开，请拔插一次设备后重试。"

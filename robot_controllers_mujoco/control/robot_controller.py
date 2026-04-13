@@ -4,15 +4,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from robot_controllers_mujoco.controllers.task_space_velocity_controller import (
+from robot_controllers_mujoco.common.async_writer import AsyncVideoWriter
+from robot_controllers_mujoco.common.config import ProjectConfig
+from robot_controllers_mujoco.common.data_manager import DataManager
+from robot_controllers_mujoco.control.task_space_velocity_controller import (
     TaskSpaceVelocityController,
 )
-from robot_controllers_mujoco.robot.async_writer import AsyncVideoWriter
-from robot_controllers_mujoco.robot.config import ProjectConfig
-from robot_controllers_mujoco.robot.data_manager import DataManager
-from robot_controllers_mujoco.robot.mujoco_interface import MujocoInterface
-from robot_controllers_mujoco.robot.robot_model import RobotModel
-from robot_controllers_mujoco.robot.robot_motion import RobotMotion
+from robot_controllers_mujoco.control.teleop_runtime import TeleopRuntime
+from robot_controllers_mujoco.simulation.mujoco_interface import MujocoInterface
+from robot_controllers_mujoco.simulation.robot_model import RobotModel
+from robot_controllers_mujoco.simulation.robot_motion import RobotMotion
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class RobotController:
         self.data_manager = DataManager()
 
         self.spacemouse: Optional[Any] = None
+        self.teleop_runtime: Optional[TeleopRuntime] = None
         self.video_writers: List[AsyncVideoWriter] = []
 
         self.reset_button_pressed = False
@@ -77,6 +79,16 @@ class RobotController:
             max_compliance_linear_velocity=config.teleop.max_compliance_linear_velocity,
             max_compliance_angular_velocity=config.teleop.max_compliance_angular_velocity,
             joint_velocity_filter_alpha=config.teleop.joint_velocity_filter_alpha,
+        )
+        self.teleop_runtime = TeleopRuntime(
+            controller=self.task_space_controller,
+            get_control_state=self._get_teleop_control_state,
+            set_joint_velocity=self._send_joint_velocity_command_to_mujoco,
+            step_simulation=self.mujoco_interface.step,
+            control_dt=config.sim.timestep,
+            get_wrench_world=self.mujoco_interface.get_end_effector_wrench_world,
+            tare_wrench=self.mujoco_interface.tare_end_effector_wrench,
+            enable_admittance=config.teleop.enable_admittance,
         )
 
     def run_simulation(self) -> None:
@@ -162,12 +174,10 @@ class RobotController:
         self.ee_tf_final = self.ee_tf_home.copy()
         self.ee_tf_final[2, 3] = 0.1
 
-        self.q_final = self.robot_model.inverse_kinematics(
+        self.q_final = self.mujoco_interface.inverse_kinematics_site(
             self.ee_tf_final,
             q_init=self.q_home,
         )
-
-        self.mujoco_interface.step()
 
         duration = self.config.sim.simulation_duration
         timestep = self.config.sim.timestep
@@ -178,6 +188,7 @@ class RobotController:
             target_transform=self.ee_tf_final,
             q_init=self.q_home,
             num_samples=int(duration / timestep) + 1,
+            ik_solver=self.mujoco_interface.inverse_kinematics_site,
         )
 
     def _initialize_spacemouse_mode(self) -> None:
@@ -251,11 +262,8 @@ class RobotController:
             )
             self._apply_control(current_q, current_v, target_q, target_v, target_a)
         elif self.config.mode.input_mode == "spacemouse":
-            joint_velocity_command = self._run_spacemouse_teleop_step(
-                current_q=current_q,
-                current_v=current_v,
-            )
-            self._send_joint_velocity_command_to_mujoco(joint_velocity_command)
+            self._execute_spacemouse_teleop_step()
+            return
         else:
             raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
 
@@ -323,21 +331,26 @@ class RobotController:
         if self._handle_spacemouse_reset_request(buttons):
             return np.zeros_like(current_q)
 
-        current_transform, _ = self._get_current_end_effector_kinematics(
-            current_q,
-            current_v,
-        )
-        jacobian = self.robot_model.jacobian(current_q)
-        wrench_world = None
-        if self.config.teleop.enable_admittance:
-            wrench_world = self.mujoco_interface.get_end_effector_wrench_world()
-        return self.task_space_controller.compute_command(
-            raw_action=raw_spacemouse_action,
-            current_q=current_q,
-            current_transform=current_transform,
-            jacobian=jacobian,
+        if self.teleop_runtime is None:
+            raise RuntimeError("Teleop runtime 尚未初始化。")
+        return self.teleop_runtime.compute_joint_velocity(
+            raw_spacemouse_action,
             dt=self.config.sim.timestep,
-            wrench_world=wrench_world,
+        )
+
+    def _execute_spacemouse_teleop_step(self) -> None:
+        """读取 SpaceMouse 输入并通过共享 runtime 完成一次控制和仿真步进。"""
+        raw_spacemouse_action, buttons = self._read_spacemouse_input()
+        if self._handle_spacemouse_reset_request(buttons):
+            self._send_joint_velocity_command_to_mujoco(np.zeros_like(self.q_home))
+            self.mujoco_interface.step()
+            return
+
+        if self.teleop_runtime is None:
+            raise RuntimeError("Teleop runtime 尚未初始化。")
+        self.teleop_runtime.step(
+            raw_spacemouse_action,
+            dt=self.config.sim.timestep,
         )
 
     def _read_spacemouse_input(self) -> Tuple[np.ndarray, list]:
@@ -365,28 +378,19 @@ class RobotController:
         """读取当前关节角度和关节角速度。"""
         return self.mujoco_interface.get_arm_joint_state()
 
-    def _get_current_end_effector_kinematics(
-        self,
-        current_q: np.ndarray,
-        current_v: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """使用 Pinocchio 计算当前末端位姿与 LOCAL twist。"""
-        return self.robot_model.end_effector_kinematics(current_q, current_v)
+    def _get_teleop_control_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """返回共享 teleop runtime 所需的 q、MuJoCo 末端位姿和 LOCAL Jacobian。"""
+        current_q, _ = self._get_current_joint_state()
+        current_transform = self.mujoco_interface.get_end_effector_transform()
+        jacobian = self.mujoco_interface.get_end_effector_local_jacobian()
+        return current_q, current_transform, jacobian
 
     def _sync_teleop_reference_to_current_state(self) -> None:
         """将 teleop 参考位姿同步到 MuJoCo 当前状态。"""
         self.mujoco_interface.forward()
-        current_q, current_v = self._get_current_joint_state()
-        current_transform, _ = self._get_current_end_effector_kinematics(
-            current_q,
-            current_v,
-        )
-        self.task_space_controller.reset(
-            current_transform=current_transform,
-            current_q=current_q,
-        )
-        if self.config.teleop.enable_admittance:
-            self.mujoco_interface.tare_end_effector_wrench()
+        if self.teleop_runtime is None:
+            raise RuntimeError("Teleop runtime 尚未初始化。")
+        self.teleop_runtime.reset_reference()
 
     def _send_joint_velocity_command_to_mujoco(
         self,

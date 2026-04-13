@@ -711,8 +711,14 @@ _active_device = None
 
 def close():
     """Close the active device, if it exists"""
+    global _active_device
     if _active_device is not None:
-        _active_device.close()
+        if isinstance(_active_device, list):
+            for device in _active_device:
+                device.close()
+        else:
+            _active_device.close()
+        _active_device = None
 
 
 def read():
@@ -731,7 +737,11 @@ def read_all():
         state: {t,x,y,z,pitch,yaw,roll,button} namedtuple
         None if the device is not open.
     """
-    return [_active_device[i].read() for i in range(len(_active_device))] if _active_device is not None else None
+    if _active_device is None:
+        return None
+    if isinstance(_active_device, list):
+        return [device.read() for device in _active_device]
+    return [_active_device.read()]
 
 
 def list_devices():
