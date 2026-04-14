@@ -38,6 +38,29 @@ def main() -> None:
         action="store_true",
         help="当 SpaceMouse 未连接或本机 HID 后端不可用时，回退到零输入 mock teleop 模式。",
     )
+    parser.add_argument(
+        "--show-cameras",
+        action="store_true",
+        help="打开末端左右相机实时拼接窗口。",
+    )
+    parser.add_argument(
+        "--camera-fps",
+        type=int,
+        default=20,
+        help="末端相机窗口刷新率。",
+    )
+    parser.add_argument(
+        "--camera-width",
+        type=int,
+        default=320,
+        help="每路末端相机画面宽度。",
+    )
+    parser.add_argument(
+        "--camera-height",
+        type=int,
+        default=240,
+        help="每路末端相机画面高度。",
+    )
 
     args = parser.parse_args()
     logger.info("--- 启动机器人控制项目 ---")
@@ -48,6 +71,10 @@ def main() -> None:
             input_mode=args.input_mode,
             control_mode=args.control_mode,
             allow_missing_spacemouse=args.allow_missing_spacemouse,
+            show_teleop_cameras=args.show_cameras,
+            teleop_camera_fps=args.camera_fps,
+            teleop_camera_width=args.camera_width,
+            teleop_camera_height=args.camera_height,
         )
         controller = RobotController(config)
         controller.run_simulation()

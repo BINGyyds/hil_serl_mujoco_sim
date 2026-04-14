@@ -39,6 +39,7 @@ class MujocoInterface:
 
         self.viewer: Optional[mujoco.viewer.Handle] = None
         self.renderer: Optional[mujoco.Renderer] = None
+        self.renderers: Dict[Tuple[int, int], mujoco.Renderer] = {}
 
         self._get_ids_from_config(config)
         self.end_effector_wrench_bias_local = np.zeros(6, dtype=np.float64)
@@ -478,26 +479,53 @@ class MujocoInterface:
             self.viewer.close()
             self.viewer = None
 
+    def has_camera(self, camera_name: str) -> bool:
+        """返回模型中是否存在指定命名相机。"""
+        return (
+            mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_CAMERA,
+                camera_name,
+            )
+            >= 0
+        )
+
     def setup_renderer(self, width: int = 1280, height: int = 720) -> mujoco.Renderer:
         """初始化离线渲染器，并返回可用的 renderer 实例。"""
-        if self.renderer is None:
-            max_width = int(self.model.vis.global_.offwidth)
-            max_height = int(self.model.vis.global_.offheight)
-            render_width = min(width, max_width)
-            render_height = min(height, max_height)
-            if (render_width, render_height) != (width, height):
-                logger.warning(
-                    "请求的离屏渲染分辨率 %sx%s 超出 MJCF framebuffer %sx%s，已自动调整为 %sx%s。",
-                    width,
-                    height,
-                    max_width,
-                    max_height,
-                    render_width,
-                    render_height,
-                )
-            self.renderer = mujoco.Renderer(self.model, render_height, render_width)
+        max_width = int(self.model.vis.global_.offwidth)
+        max_height = int(self.model.vis.global_.offheight)
+        render_width = min(width, max_width)
+        render_height = min(height, max_height)
+        if (render_width, render_height) != (width, height):
+            logger.warning(
+                "请求的离屏渲染分辨率 %sx%s 超出 MJCF framebuffer %sx%s，已自动调整为 %sx%s。",
+                width,
+                height,
+                max_width,
+                max_height,
+                render_width,
+                render_height,
+            )
+
+        renderer_key = (render_width, render_height)
+        renderer = self.renderers.get(renderer_key)
+        if renderer is None:
+            renderer = mujoco.Renderer(self.model, render_height, render_width)
+            self.renderers[renderer_key] = renderer
+            if self.renderer is None:
+                self.renderer = renderer
             logger.info("离线渲染器已初始化，分辨率: %sx%s", render_width, render_height)
-        return self.renderer
+        return renderer
+
+    def close_renderers(self) -> None:
+        """关闭所有离屏渲染器。"""
+        for renderer in self.renderers.values():
+            try:
+                renderer.close()
+            except Exception:
+                logger.exception("关闭离屏渲染器失败。")
+        self.renderers = {}
+        self.renderer = None
 
     def set_camera_view(
         self,
@@ -513,19 +541,35 @@ class MujocoInterface:
         if lookat is not None:
             self.camera.lookat[:] = lookat
 
-    def render_frame(self, camera: Union[str, mujoco.MjvCamera]) -> np.ndarray:
+    def render_frame(
+        self,
+        camera: Union[str, mujoco.MjvCamera],
+        width: int = 1280,
+        height: int = 720,
+    ) -> np.ndarray:
         """从指定相机渲染一帧 RGB 图像。"""
-        renderer = self.setup_renderer()
+        if isinstance(camera, str) and not self.has_camera(camera):
+            raise ValueError(f"MuJoCo 模型中不存在名为 '{camera}' 的相机。")
+        renderer = self.setup_renderer(width=width, height=height)
         renderer.update_scene(self.data, camera=camera)
         return renderer.render()
 
-    def render_all_custom_frames(self, camera_names: Tuple[str, ...]) -> Dict[str, np.ndarray]:
+    def render_all_custom_frames(
+        self,
+        camera_names: Tuple[str, ...],
+        width: int = 1280,
+        height: int = 720,
+    ) -> Dict[str, np.ndarray]:
         """从多个命名相机渲染图像。"""
         frames: Dict[str, np.ndarray] = {}
 
         for cam_name in camera_names:
             try:
-                frames[cam_name] = self.render_frame(camera=cam_name)
+                frames[cam_name] = self.render_frame(
+                    camera=cam_name,
+                    width=width,
+                    height=height,
+                )
             except mujoco.FatalError:
                 logger.warning("相机 '%s' 渲染失败，已跳过。", cam_name)
         return frames

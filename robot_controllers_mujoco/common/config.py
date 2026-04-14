@@ -30,6 +30,15 @@ class VisualizationConfig:
     use_viewer: bool = True
     video_fps: int = 30
     video_speed_multiplier: float = 1.0
+    show_teleop_cameras: bool = False
+    teleop_camera_names: Tuple[str, ...] = (
+        "wrist_left_camera",
+        "wrist_right_camera",
+    )
+    teleop_camera_fps: int = 20
+    teleop_camera_width: int = 320
+    teleop_camera_height: int = 240
+    teleop_camera_window_name: str = "wrist cameras"
 
 
 @dataclass
@@ -193,6 +202,10 @@ class ProjectConfig:
         input_mode: Optional[str] = None,
         control_mode: Optional[str] = None,
         allow_missing_spacemouse: Optional[bool] = None,
+        show_teleop_cameras: Optional[bool] = None,
+        teleop_camera_fps: Optional[int] = None,
+        teleop_camera_width: Optional[int] = None,
+        teleop_camera_height: Optional[int] = None,
     ) -> "ProjectConfig":
         """使用默认配置并应用少量运行时覆盖项。"""
         config = cls()
@@ -204,6 +217,14 @@ class ProjectConfig:
             config.mode.control_mode = control_mode
         if allow_missing_spacemouse is not None:
             config.mode.allow_missing_spacemouse = allow_missing_spacemouse
+        if show_teleop_cameras is not None:
+            config.visualization.show_teleop_cameras = show_teleop_cameras
+        if teleop_camera_fps is not None:
+            config.visualization.teleop_camera_fps = teleop_camera_fps
+        if teleop_camera_width is not None:
+            config.visualization.teleop_camera_width = teleop_camera_width
+        if teleop_camera_height is not None:
+            config.visualization.teleop_camera_height = teleop_camera_height
         config.refresh()
         return config
 
@@ -243,3 +264,9 @@ class ProjectConfig:
             )
         if self.sim.real_time_factor <= 0.0:
             raise ValueError("real_time_factor 必须大于 0。")
+        if self.visualization.teleop_camera_fps <= 0:
+            raise ValueError("teleop_camera_fps 必须大于 0。")
+        if self.visualization.teleop_camera_width <= 0:
+            raise ValueError("teleop_camera_width 必须大于 0。")
+        if self.visualization.teleop_camera_height <= 0:
+            raise ValueError("teleop_camera_height 必须大于 0。")

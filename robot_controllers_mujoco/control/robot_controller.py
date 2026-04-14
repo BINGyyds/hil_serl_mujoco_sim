@@ -35,6 +35,8 @@ class RobotController:
         self.spacemouse: Optional[Any] = None
         self.teleop_runtime: Optional[TeleopRuntime] = None
         self.video_writers: List[AsyncVideoWriter] = []
+        self.teleop_camera_cv2: Optional[Any] = None
+        self.teleop_camera_window_open = False
 
         self.reset_button_pressed = False
         self.q_home = np.zeros(7, dtype=np.float64)
@@ -43,6 +45,7 @@ class RobotController:
         self.sim_time_start = 0.0
         self.video_frame_duration = 0.0
         self.next_frame_sim_time = 0.0
+        self.next_camera_frame_sim_time = 0.0
         self.next_log_time = 0.0
 
         self.effort_kp = np.diag(config.effort_control.kp_gains)
@@ -116,10 +119,6 @@ class RobotController:
         logger.info("正在准备仿真环境...")
 
         self.video_frame_duration = 1.0 / self.config.visualization.video_fps
-        self.next_frame_sim_time = self.mujoco_interface.data.time
-        self.next_log_time = 0.0
-        self.wall_time_start = time.perf_counter()
-        self.sim_time_start = self.mujoco_interface.data.time
 
         self.mujoco_interface.set_camera_view(
             azimuth=72.91,
@@ -130,6 +129,7 @@ class RobotController:
 
         self.mujoco_interface.reset_to_home_keyframe()
         self.mujoco_interface.forward()
+        self._reset_loop_timing()
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
 
         if self.config.mode.input_mode == "planned":
@@ -164,6 +164,8 @@ class RobotController:
 
         for writer in self.video_writers:
             writer.start()
+
+        self._setup_teleop_camera_window()
 
         if self.config.visualization.use_viewer:
             self.mujoco_interface.launch_viewer()
@@ -228,8 +230,11 @@ class RobotController:
             writer.stop()
         self.video_writers = []
 
+        self._close_teleop_camera_window()
+
         if self.config.visualization.use_viewer:
             self.mujoco_interface.close_viewer()
+        self.mujoco_interface.close_renderers()
 
         if self.spacemouse is not None:
             self.spacemouse.close()
@@ -239,7 +244,7 @@ class RobotController:
         if robot_data_path:
             self.data_manager.save_data(robot_path=robot_data_path)
 
-        self.data_manager.plot_data()
+        # self.data_manager.plot_data()
 
     def _handle_data_logging(self, current_sim_time: float) -> None:
         """在仿真循环中处理数据采样与日志输出。"""
@@ -251,13 +256,12 @@ class RobotController:
             if current_sim_time % 0.5 < self.config.sim.timestep:
                 if self.config.mode.input_mode == "planned":
                     error_pos = self.ee_tf_final[:3, 3] - ee_pos
-                    self.print_robot_info(current_sim_time, ee_pos, current_q, error_pos)
                 elif self.config.mode.input_mode == "spacemouse":
-                    self.print_robot_info(current_sim_time, ee_pos, current_q, None)
-                    return
+                    error_pos = None
                 else:
                     raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
-            
+                self.print_robot_info(current_sim_time, ee_pos, current_q, error_pos)
+
             self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos)
             self.next_log_time += self.config.logging.data_logging_interval
 
@@ -285,8 +289,114 @@ class RobotController:
         #     self.video_writers[0].add_frame(main_frame)
         #     while current_sim_time >= self.next_frame_sim_time:
         #         self.next_frame_sim_time += self.video_frame_duration
+        self._handle_teleop_camera_window(current_sim_time)
         if self.config.visualization.use_viewer:
             self.mujoco_interface.sync_viewer()
+
+    def _setup_teleop_camera_window(self) -> None:
+        """初始化末端左右相机实时显示窗口。"""
+        visualization = self.config.visualization
+        if not visualization.show_teleop_cameras:
+            return
+
+        missing_camera_names = [
+            camera_name
+            for camera_name in visualization.teleop_camera_names
+            if not self.mujoco_interface.has_camera(camera_name)
+        ]
+        if missing_camera_names:
+            raise ValueError(
+                "当前 MuJoCo 模型缺少实时显示所需相机: "
+                f"{missing_camera_names}。请确认使用 control_mode='velocity'。"
+            )
+
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("未安装 OpenCV(cv2)，无法打开末端相机窗口。") from exc
+
+        self.teleop_camera_cv2 = cv2
+        self.teleop_camera_window_open = True
+        self.next_camera_frame_sim_time = self.mujoco_interface.data.time
+        cv2.namedWindow(visualization.teleop_camera_window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(
+            visualization.teleop_camera_window_name,
+            visualization.teleop_camera_width * len(visualization.teleop_camera_names),
+            visualization.teleop_camera_height,
+        )
+        logger.info(
+            "末端相机窗口已启用: cameras=%s, size=%sx%s, fps=%s",
+            visualization.teleop_camera_names,
+            visualization.teleop_camera_width,
+            visualization.teleop_camera_height,
+            visualization.teleop_camera_fps,
+        )
+
+    def _handle_teleop_camera_window(self, current_sim_time: float) -> None:
+        """按固定 FPS 渲染并显示末端相机拼接画面。"""
+        visualization = self.config.visualization
+        if (
+            not visualization.show_teleop_cameras
+            or not self.teleop_camera_window_open
+            or self.teleop_camera_cv2 is None
+            or current_sim_time < self.next_camera_frame_sim_time
+        ):
+            return
+
+        cv2 = self.teleop_camera_cv2
+        try:
+            frames = self.mujoco_interface.render_all_custom_frames(
+                visualization.teleop_camera_names,
+                width=visualization.teleop_camera_width,
+                height=visualization.teleop_camera_height,
+            )
+            display_frames = []
+            for camera_name in visualization.teleop_camera_names:
+                frame = frames.get(camera_name)
+                if frame is None:
+                    continue
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                cv2.putText(
+                    bgr_frame,
+                    camera_name,
+                    (8, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+                display_frames.append(bgr_frame)
+
+            if display_frames:
+                camera_panel = np.hstack(display_frames)
+                cv2.imshow(visualization.teleop_camera_window_name, camera_panel)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    self._close_teleop_camera_window()
+
+        except Exception:
+            logger.exception("末端相机实时显示失败，已关闭相机窗口。")
+            self._close_teleop_camera_window()
+            return
+
+        frame_interval = 1.0 / visualization.teleop_camera_fps
+        self.next_camera_frame_sim_time += frame_interval
+        while self.next_camera_frame_sim_time <= current_sim_time:
+            self.next_camera_frame_sim_time += frame_interval
+
+    def _close_teleop_camera_window(self) -> None:
+        """关闭末端相机 OpenCV 窗口。"""
+        if self.teleop_camera_cv2 is None or not self.teleop_camera_window_open:
+            return
+
+        try:
+            self.teleop_camera_cv2.destroyWindow(
+                self.config.visualization.teleop_camera_window_name
+            )
+        except Exception:
+            logger.exception("关闭末端相机窗口失败。")
+        self.teleop_camera_window_open = False
 
     def _sync_to_real_time(self, current_sim_time: float) -> None:
         """将仿真时间与墙钟时间对齐。"""
@@ -300,7 +410,22 @@ class RobotController:
         if remaining > 0.0:
             time.sleep(remaining)
 
-    def print_robot_info(self, current_time: float, ee_pos: np.ndarray, current_q: np.ndarray, error_pos: np.ndarray) -> None:
+    def _reset_loop_timing(self) -> None:
+        """重置所有依赖 MuJoCo 仿真时间的循环调度器。"""
+        current_sim_time = self.mujoco_interface.data.time
+        self.next_frame_sim_time = current_sim_time
+        self.next_camera_frame_sim_time = current_sim_time
+        self.next_log_time = current_sim_time
+        self.wall_time_start = time.perf_counter()
+        self.sim_time_start = current_sim_time
+
+    def print_robot_info(
+        self,
+        current_time: float,
+        ee_pos: np.ndarray,
+        current_q: np.ndarray,
+        error_pos: Optional[np.ndarray],
+    ) -> None:
         """打印机器人和仿真器的关键信息。"""
         logger.info("=" * 60)
         logger.info("机器人信息:")
@@ -378,6 +503,7 @@ class RobotController:
         if reset_pressed:
             if not self.reset_button_pressed:
                 self.mujoco_interface.reset_to_home_keyframe()
+                self._reset_loop_timing()
                 self._sync_teleop_reference_to_current_state()
             self.reset_button_pressed = True
             return True
