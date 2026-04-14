@@ -1,6 +1,8 @@
 # robot_model.py
 
 import logging
+import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Optional, Tuple, cast
 
@@ -16,7 +18,7 @@ class RobotModel:
     def __init__(self, mjcf_path: Path, end_effector_frame_name: str) -> None:
         self.mjcf_path = Path(mjcf_path)
         try:
-            self.model = cast(pin.Model, pin.buildModelFromMJCF(str(self.mjcf_path)))
+            self.model = self._build_model_from_mjcf()
             self.data = cast(pin.Data, self.model.createData())
 
             if not self.model.existFrame(end_effector_frame_name):
@@ -37,6 +39,53 @@ class RobotModel:
         except Exception:
             logger.exception("从 MJCF 构建 Pinocchio 模型失败。")
             raise
+
+    def _build_model_from_mjcf(self) -> pin.Model:
+        """构建 Pinocchio 模型，并兼容 MuJoCo-only 的 SDF geom。"""
+        try:
+            return cast(pin.Model, pin.buildModelFromMJCF(str(self.mjcf_path)))
+        except ValueError as exc:
+            if "geomType does not exist" not in str(exc):
+                raise
+
+        pinocchio_mjcf_path = self._write_pinocchio_compatible_mjcf()
+        try:
+            logger.warning(
+                "Pinocchio 不支持 MJCF 中的 geom type='sdf'，"
+                "已使用临时兼容文件构建动力学模型: %s",
+                pinocchio_mjcf_path,
+            )
+            return cast(pin.Model, pin.buildModelFromMJCF(str(pinocchio_mjcf_path)))
+        finally:
+            pinocchio_mjcf_path.unlink(missing_ok=True)
+
+    def _write_pinocchio_compatible_mjcf(self) -> Path:
+        """生成仅供 Pinocchio 读取的 MJCF，保留 MuJoCo 运行模型不变。"""
+        tree = ET.parse(self.mjcf_path)
+        root = tree.getroot()
+
+        compiler = root.find("compiler")
+        if compiler is not None:
+            meshdir = compiler.get("meshdir")
+            if meshdir and not Path(meshdir).is_absolute():
+                compiler.set("meshdir", str((self.mjcf_path.parent / meshdir).resolve()))
+
+        option = root.find("option")
+        if option is not None:
+            option.attrib.pop("sdf_iterations", None)
+            option.attrib.pop("sdf_initpoints", None)
+
+        for geom in root.iter("geom"):
+            if geom.get("type") == "sdf":
+                geom.set("type", "mesh")
+
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            suffix=".pinocchio.xml",
+            delete=False,
+        ) as temp_file:
+            tree.write(temp_file, encoding="utf-8", xml_declaration=False)
+            return Path(temp_file.name)
 
     def forward_kinematics(self, q: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """执行正向运动学计算并返回末端位姿。"""

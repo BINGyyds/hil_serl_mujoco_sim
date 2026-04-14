@@ -172,7 +172,9 @@ class RobotController:
         """初始化离线规划模式。"""
         self.ee_tf_home = self.mujoco_interface.get_end_effector_transform()
         self.ee_tf_final = self.ee_tf_home.copy()
-        self.ee_tf_final[2, 3] = 0.1
+        self.ee_tf_final[2, 3] = 0.052
+        # socket_tf = self.mujoco_interface.get_site_transform("tool_socket_center_site")
+        # self.ee_tf_final[:3, 3] = socket_tf[:3, 3]
 
         self.q_final = self.mujoco_interface.inverse_kinematics_site(
             self.ee_tf_final,
@@ -246,9 +248,16 @@ class RobotController:
             torques = self.mujoco_interface.get_joint_torques()
             ee_pos = self.mujoco_interface.get_end_effector_position()
 
-            if current_sim_time % 2.0 < self.config.sim.timestep:
-                self.print_robot_info(ee_pos)
-
+            if current_sim_time % 0.5 < self.config.sim.timestep:
+                if self.config.mode.input_mode == "planned":
+                    error_pos = self.ee_tf_final[:3, 3] - ee_pos
+                    self.print_robot_info(current_sim_time, ee_pos, current_q, error_pos)
+                elif self.config.mode.input_mode == "spacemouse":
+                    self.print_robot_info(current_sim_time, ee_pos, current_q, None)
+                    return
+                else:
+                    raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
+            
             self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos)
             self.next_log_time += self.config.logging.data_logging_interval
 
@@ -291,12 +300,14 @@ class RobotController:
         if remaining > 0.0:
             time.sleep(remaining)
 
-    def print_robot_info(self, ee_pos: np.ndarray) -> None:
+    def print_robot_info(self, current_time: float, ee_pos: np.ndarray, current_q: np.ndarray, error_pos: np.ndarray) -> None:
         """打印机器人和仿真器的关键信息。"""
         logger.info("=" * 60)
         logger.info("机器人信息:")
-        logger.info("时间步长: %ss", self.config.sim.timestep)
+        logger.info("仿真时间:%s", current_time)
         logger.info("末端位置:%s", ee_pos)
+        logger.info("关节角度: %s", current_q)
+        logger.info("末端位置跟踪误差: %s", error_pos)
         logger.info("=" * 60)
 
     def _apply_control(

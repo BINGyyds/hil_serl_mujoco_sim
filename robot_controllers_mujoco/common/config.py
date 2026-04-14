@@ -16,7 +16,7 @@ class ModeConfig:
 class SimulationConfig:
     """仿真时间与实时同步配置。"""
 
-    simulation_duration: float = 50.0
+    simulation_duration: float = 10.0
     timestep: float = 0.001
     enable_gravity_compensation: bool = False
     sync_to_real_time: bool = True
