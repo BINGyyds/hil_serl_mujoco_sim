@@ -99,6 +99,15 @@ python scripts/record_demos_mujoco.py \
   --num_demos 25
 ```
 
+默认录制参数已经和当前训练 actor / eval 对齐：
+
+- 控制频率 `100 Hz`
+- `sim_timestep=0.001`
+- `n_substeps=10`
+- 默认关闭 reset 随机扰动，使每条 demo 从与 debug teleop 一致的 home 位姿起步
+
+如果希望恢复训练时的随机初始位姿，可以显式加 `--random-reset`。
+
 如果需要观察录制过程：
 
 ```bash
@@ -107,6 +116,17 @@ python scripts/record_demos_mujoco.py \
   --num_demos 25 \
   --render-human \
   --realtime
+```
+
+如果希望在录制时同时观察末端相机窗口：
+
+```bash
+python scripts/record_demos_mujoco.py \
+  --output demo_data/insertion_demos.pkl \
+  --num_demos 25 \
+  --render-human \
+  --realtime \
+  --show-cameras
 ```
 
 如果怀疑 SpaceMouse 没有生效，可以先打开输入调试：
@@ -120,7 +140,18 @@ python scripts/record_demos_mujoco.py \
   --debug-spacemouse
 ```
 
-终端会周期性打印 6D action 和按钮状态。录制时默认单条 demo 最长 1000 步，约 40 秒；需要更长时间可以加 `--max_episode_steps 1500`。如果动作太慢，可以小幅提高 `--action_scale`，例如 `--action_scale 1.5`。
+终端会周期性打印 6D action 和按钮状态。录制时默认单条 demo 最长 1000 步，约 10 秒；需要更长时间可以加 `--max_episode_steps 1500`。如果动作太慢，可以小幅提高 `--action_scale`，例如 `--action_scale 1.5`。
+
+常用录制参数：
+
+- `--show-cameras`
+  - 打开 OpenCV 末端相机窗口，仅用于辅助录制，不会写入 demo 数据集
+- `--random-reset`
+  - 恢复训练环境中的 reset 随机扰动
+- `--control-hz`
+  - 修改 SpaceMouse action 更新频率，默认 `100`
+- `--sim-timestep`
+  - 修改 MuJoCo 物理步长，默认 `0.001`
 
 录制脚本当前仅保留真实控制路径：
 

@@ -17,10 +17,12 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         mjcf_path=str(_MODEL_DIR / "insertion_scene.xml"),
         ee_site_name="tool_tip_site",
         socket_site_name="tool_socket_center_site",
+        home_key_name="home",
         actuator_mode="velocity",
 
-        sim_timestep=0.002,
-        n_substeps=20,
+        sim_timestep=0.001,
+        n_substeps=10,
+        control_dt=0.01,
         enable_gravity_compensation=True,
 
         pos_action_scale=0.02,
@@ -34,16 +36,20 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         reward_z_weight=1.5,
         reward_rot_weight=0.3,
         reward_depth_weight=2.0,
-        reward_success_bonus=25.0,
+        reward_success_bonus=100.0,
+        reward_failure_penalty=25.0,
+        reward_step_penalty=0.01,
+        reward_depth_xy_threshold=0.004,
+        reward_depth_rot_threshold=0.12,
 
-        success_xy_threshold=0.004,
-        success_rot_threshold=0.12,
-        success_tip_z_threshold=0.105,
+        success_xy_threshold=0.002,
+        success_rot_threshold=0.1,
+        success_z_gap_threshold=0.002,
 
-        workspace_low=np.array([0.49, -0.05, 0.05]),
-        workspace_high=np.array([0.62, 0.05, 0.58]),
-        failure_xy_threshold=0.03,
-        failure_tip_z_threshold=0.075,
+        workspace_low=np.array([0.49, -0.05, -0.02]),
+        workspace_high=np.array([0.62, 0.05, 0.12]),
+        failure_xy_threshold=0.012,
+        failure_z_gap_threshold=0.012,
 
         input_deadzone=0.05,
         input_filter_alpha=0.25,
@@ -69,7 +75,7 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         max_compliance_angular_velocity=0.5,
         joint_velocity_filter_alpha=1.0,
 
-        max_episode_steps=200,
+        max_episode_steps=1000,
         render_camera="front",
     )
     defaults.update(overrides)

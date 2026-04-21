@@ -16,13 +16,15 @@ import pickle as pkl
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+import mujoco
 import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from robot_controllers_mujoco.common.config import VisualizationConfig
 from robot_controllers_mujoco.configs.insertion_config import make_insertion_config
 from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv
 from robot_controllers_mujoco.envs.wrappers import MujocoSERLObsWrapper
@@ -38,6 +40,95 @@ def maybe_render(env, render_enabled: bool) -> None:
     """Render one frame only when explicitly enabled."""
     if render_enabled:
         env.render()
+
+
+class DemoCameraWindow:
+    """Small OpenCV helper for optional teleop camera display during recording."""
+
+    def __init__(
+        self,
+        env: FrankaInsertionEnv,
+        *,
+        camera_names: Sequence[str],
+        width: int,
+        height: int,
+        fps: int,
+        window_name: str,
+    ) -> None:
+        if fps <= 0:
+            raise ValueError("camera fps must be positive.")
+        self.env = env
+        self.camera_names = tuple(camera_names)
+        self.width = width
+        self.height = height
+        self.frame_interval = 1.0 / fps
+        self.window_name = window_name
+        self.next_frame_time = 0.0
+        self.window_open = True
+        self.renderer: Optional[mujoco.Renderer] = mujoco.Renderer(env.model, height, width)
+
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("未安装 OpenCV(cv2)，无法打开相机窗口。") from exc
+        self.cv2 = cv2
+
+        missing = [
+            name
+            for name in self.camera_names
+            if mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_CAMERA, name) < 0
+        ]
+        if missing:
+            raise ValueError(f"MuJoCo 模型缺少相机: {missing}")
+
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, width * len(self.camera_names), height)
+
+    def render(self) -> None:
+        if (
+            not self.window_open
+            or self.renderer is None
+            or self.env.data.time < self.next_frame_time
+        ):
+            return
+
+        frames = []
+        for camera_name in self.camera_names:
+            self.renderer.update_scene(self.env.data, camera=camera_name)
+            frame = self.renderer.render()
+            bgr = self.cv2.cvtColor(frame, self.cv2.COLOR_RGB2BGR)
+            self.cv2.putText(
+                bgr,
+                camera_name,
+                (8, 22),
+                self.cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                1,
+                self.cv2.LINE_AA,
+            )
+            frames.append(bgr)
+
+        if frames:
+            self.cv2.imshow(self.window_name, np.hstack(frames))
+            key = self.cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                self.close()
+
+        self.next_frame_time += self.frame_interval
+        while self.next_frame_time <= self.env.data.time:
+            self.next_frame_time += self.frame_interval
+
+    def reset_timing(self) -> None:
+        self.next_frame_time = self.env.data.time
+
+    def close(self) -> None:
+        if self.window_open:
+            self.cv2.destroyWindow(self.window_name)
+            self.window_open = False
+        if self.renderer is not None:
+            self.renderer.close()
+            self.renderer = None
 
 
 def main() -> None:
@@ -63,15 +154,55 @@ def main() -> None:
         help="显式打开 MuJoCo viewer。",
     )
     parser.add_argument(
+        "--show-cameras",
+        action="store_true",
+        help="打开末端相机观察窗口；画面只用于辅助录制，不写入 demo。",
+    )
+    parser.add_argument(
+        "--camera-fps",
+        type=int,
+        default=20,
+        help="--show-cameras 相机窗口刷新率。",
+    )
+    parser.add_argument(
+        "--camera-width",
+        type=int,
+        default=320,
+        help="--show-cameras 单路相机宽度。",
+    )
+    parser.add_argument(
+        "--camera-height",
+        type=int,
+        default=240,
+        help="--show-cameras 单路相机高度。",
+    )
+    parser.add_argument(
         "--realtime",
         action="store_true",
         help="按 env.control_dt 近似做实时节奏推进，主要用于配合 --render-human 观察。",
     )
     parser.add_argument(
+        "--random-reset",
+        action="store_true",
+        help="恢复训练用 reset 随机扰动；默认关闭，使录制起点与 debug teleop home 一致。",
+    )
+    parser.add_argument(
+        "--control-hz",
+        type=float,
+        default=100.0,
+        help="录制时 SpaceMouse action 更新频率。默认 100Hz，与训练 actor/eval 默认一致。",
+    )
+    parser.add_argument(
+        "--sim-timestep",
+        type=float,
+        default=0.001,
+        help="录制时 MuJoCo 物理步长。默认 0.001s，与 debug teleop 一致。",
+    )
+    parser.add_argument(
         "--max_episode_steps",
         type=int,
         default=1000,
-        help="单条 demo 最多允许的环境步数。默认 1000 步约 40 秒。",
+        help="单条 demo 最多允许的环境步数。默认 1000 步约 10 秒。",
     )
     parser.add_argument(
         "--debug-spacemouse",
@@ -100,12 +231,43 @@ def main() -> None:
     ]
 
     render_mode: Optional[str] = "human" if args.render_human else None
+    if args.control_hz <= 0.0:
+        raise ValueError("--control-hz 必须大于 0。")
+    if args.sim_timestep <= 0.0:
+        raise ValueError("--sim-timestep 必须大于 0。")
+    control_dt = 1.0 / args.control_hz
+    n_substeps = max(1, int(round(control_dt / args.sim_timestep)))
+    control_dt = n_substeps * args.sim_timestep
+
+    config_overrides = dict(
+        max_episode_steps=args.max_episode_steps,
+        sim_timestep=args.sim_timestep,
+        n_substeps=n_substeps,
+        control_dt=control_dt,
+    )
+    if not args.random_reset:
+        config_overrides.update(
+            reset_pos_noise_low=np.zeros(3, dtype=np.float64),
+            reset_pos_noise_high=np.zeros(3, dtype=np.float64),
+            reset_yaw_range=0.0,
+        )
     raw_env = FrankaInsertionEnv(
-        config=make_insertion_config(max_episode_steps=args.max_episode_steps),
+        config=make_insertion_config(**config_overrides),
         render_mode=render_mode,
     )
     env = MujocoSERLObsWrapper(raw_env, proprio_keys=proprio_keys)
     expert = make_expert()
+    camera_window: Optional[DemoCameraWindow] = None
+    if args.show_cameras:
+        camera_config = VisualizationConfig()
+        camera_window = DemoCameraWindow(
+            raw_env,
+            camera_names=camera_config.teleop_camera_names,
+            width=args.camera_width,
+            height=args.camera_height,
+            fps=args.camera_fps,
+            window_name=camera_config.teleop_camera_window_name,
+        )
 
     all_demos: list = []
     episode_transitions: list = []
@@ -116,14 +278,26 @@ def main() -> None:
     print("  RIGHT button = save successful episode | LEFT button = discard/reset")
     print(f"  Max episode steps: {args.max_episode_steps}")
     print(f"  Action scale: {args.action_scale}")
+    print(
+        f"  Control rate: {1.0 / raw_env.cfg.control_dt:.1f} Hz "
+        f"(dt={raw_env.cfg.control_dt:.4f}s, "
+        f"sim_timestep={raw_env.cfg.sim_timestep:.4f}s, "
+        f"n_substeps={raw_env.cfg.n_substeps})"
+    )
+    print(f"  Random reset: {args.random_reset}")
     if args.render_human:
         print("  Human viewer enabled.")
     else:
         print("  Running headless.")
+    if args.show_cameras:
+        print("  Teleop camera window enabled.")
     print("-" * 60)
 
     obs, _ = env.reset()
     maybe_render(env, args.render_human)
+    if camera_window is not None:
+        camera_window.reset_timing()
+        camera_window.render()
     last_debug_print = 0.0
 
     try:
@@ -148,6 +322,8 @@ def main() -> None:
 
             next_obs, reward, done, truncated, info = env.step(action)
             maybe_render(env, args.render_human)
+            if camera_window is not None:
+                camera_window.render()
 
             transition = dict(
                 observations=obs,
@@ -179,6 +355,9 @@ def main() -> None:
                 episode_transitions = []
                 obs, _ = env.reset()
                 maybe_render(env, args.render_human)
+                if camera_window is not None:
+                    camera_window.reset_timing()
+                    camera_window.render()
                 time.sleep(0.3)
             elif should_discard:
                 print(
@@ -191,6 +370,9 @@ def main() -> None:
                 episode_transitions = []
                 obs, _ = env.reset()
                 maybe_render(env, args.render_human)
+                if camera_window is not None:
+                    camera_window.reset_timing()
+                    camera_window.render()
                 time.sleep(0.3)
 
             if args.realtime:
@@ -205,6 +387,8 @@ def main() -> None:
     finally:
         if expert is not None:
             expert.close()
+        if camera_window is not None:
+            camera_window.close()
         env.close()
 
     if all_demos:

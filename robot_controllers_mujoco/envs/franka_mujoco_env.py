@@ -34,6 +34,7 @@ class FrankaMujocoConfig:
     arm_joint_names: Tuple[str, ...] = tuple(f"joint{i+1}" for i in range(7))
     arm_actuator_names: Tuple[str, ...] = tuple(f"joint{i+1}_ctrl" for i in range(7))
     ee_site_name: str = "attachment_site"
+    home_key_name: str = "home"
 
     # Home joint configuration (Panda default)
     home_qpos: np.ndarray = field(
@@ -156,22 +157,45 @@ class FrankaMujocoEnv(gym.Env):
     ) -> Tuple[Dict, Dict]:
         super().reset(seed=seed)
 
-        mujoco.mj_resetData(self.model, self.data)
-
-        self.data.qpos[self._qpos_addrs] = self.cfg.home_qpos.copy()
-        if self.cfg.actuator_mode == "position":
-            self.data.ctrl[self._actuator_ids] = self.cfg.home_qpos.copy()
-        elif self.cfg.actuator_mode == "velocity":
-            self.data.ctrl[self._actuator_ids] = np.zeros(self._nq, dtype=np.float64)
-        else:
-            raise ValueError(
-                f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
-                "Expected 'position' or 'velocity'."
-            )
-        mujoco.mj_forward(self.model, self.data)
+        self._reset_to_home_state()
 
         obs = self._get_obs()
         return obs, {}
+
+    def _reset_to_home_state(self) -> None:
+        """Reset to the MJCF home keyframe when available, otherwise cfg.home_qpos."""
+        key_id = -1
+        if self.cfg.home_key_name:
+            key_id = mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_KEY,
+                self.cfg.home_key_name,
+            )
+
+        if key_id >= 0:
+            mujoco.mj_resetDataKeyframe(self.model, self.data, key_id)
+        else:
+            mujoco.mj_resetData(self.model, self.data)
+            self.data.qpos[self._qpos_addrs] = self.cfg.home_qpos.copy()
+
+        self.data.qvel[self._dof_addrs] = 0.0
+        self._sync_actuator_ctrl_to_current_state()
+        mujoco.mj_forward(self.model, self.data)
+
+    def _sync_actuator_ctrl_to_current_state(self) -> None:
+        """Set actuator controls consistently for the configured actuator mode."""
+        if self.cfg.actuator_mode == "position":
+            self.data.ctrl[self._actuator_ids] = self.data.qpos[self._qpos_addrs].copy()
+            return
+
+        if self.cfg.actuator_mode == "velocity":
+            self.data.ctrl[self._actuator_ids] = np.zeros(self._nq, dtype=np.float64)
+            return
+
+        raise ValueError(
+            f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
+            "Expected 'position' or 'velocity'."
+        )
 
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
         action = np.clip(action, -1.0, 1.0).astype(np.float64)

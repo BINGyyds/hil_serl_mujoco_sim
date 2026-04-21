@@ -41,14 +41,33 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
         self.left: bool = False
         self.right: bool = False
         self.action_scale = action_scale
+        self._cached_action: Optional[np.ndarray] = None
+        self._cached_replaced: Optional[bool] = None
 
-    def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
+    def _read_expert_action(self) -> Tuple[np.ndarray, bool]:
         expert_a, buttons = self.expert.get_action()
         self.left = bool(buttons[0]) if len(buttons) > 0 else False
         self.right = bool(buttons[1]) if len(buttons) > 1 else False
         expert_a = expert_a[:6] * self.action_scale
 
         intervened = np.linalg.norm(expert_a) > 0.001 or self.left or self.right
+        return expert_a, intervened
+
+    def peek_intervention(self) -> Tuple[np.ndarray, bool]:
+        """Read SpaceMouse once and cache the result for the next ``step`` call."""
+        if self._cached_action is None or self._cached_replaced is None:
+            self._cached_action, self._cached_replaced = self._read_expert_action()
+        return self._cached_action.copy(), bool(self._cached_replaced)
+
+    def action(self, action: np.ndarray) -> Tuple[np.ndarray, bool]:
+        if self._cached_action is not None and self._cached_replaced is not None:
+            expert_a = self._cached_action
+            intervened = self._cached_replaced
+            self._cached_action = None
+            self._cached_replaced = None
+        else:
+            expert_a, intervened = self._read_expert_action()
+
         if intervened:
             return expert_a, True
         return action, False
@@ -63,6 +82,13 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
         if self.left:
             done = True
         return obs, rew, done, truncated, info
+
+    def reset(self, **kwargs):
+        self._cached_action = None
+        self._cached_replaced = None
+        self.left = False
+        self.right = False
+        return super().reset(**kwargs)
 
     def close(self):
         self.expert.close()

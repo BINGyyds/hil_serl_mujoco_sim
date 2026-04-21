@@ -4,7 +4,7 @@
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="120" elevation="-20" offwidth="640" offheight="480"/>
+    <global azimuth="120" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
 
   <worldbody>
@@ -12,5 +12,7 @@
     <camera name="side" pos="0 1.4 0.8" xyaxes="-1 0 0 0 -0.4 1" fovy="45"/>
     <camera name="top" pos="0.55 0 1.8" xyaxes="0 1 0 -1 0 0" fovy="50"/>
     <camera name="wrist" pos="0 0 0" mode="targetbodycom" target="link7" fovy="60"/>
+    <camera name="tool_follow_camera" mode="targetbody" target="tool_male"
+      pos="0.85 -0.45 0.35" xyaxes="0.85 0.53 0 -0.18 0.29 0.94" fovy="45"/>
   </worldbody>
 </mujoco>

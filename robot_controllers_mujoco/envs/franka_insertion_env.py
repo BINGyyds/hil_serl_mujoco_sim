@@ -53,24 +53,30 @@ class InsertionConfig(FrankaMujocoConfig):
     reward_z_weight: float = 1.5
     reward_rot_weight: float = 0.3
     reward_depth_weight: float = 2.0
-    reward_success_bonus: float = 25.0
+    reward_success_bonus: float = 100.0
+    reward_failure_penalty: float = 25.0
+    reward_step_penalty: float = 0.01
+    reward_depth_xy_threshold: float = 0.004
+    reward_depth_rot_threshold: float = 0.12
 
     # Success thresholds.
     success_xy_threshold: float = 0.004
     success_rot_threshold: float = 0.12
+    success_z_gap_threshold: float = 0.006
     success_tip_z_threshold: float = 0.105
 
     # Failure / workspace bounds.
     workspace_low: np.ndarray = field(
-        default_factory=lambda: np.array([0.49, -0.05, 0.05])
+        default_factory=lambda: np.array([0.49, -0.05, -0.02])
     )
     workspace_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.62, 0.05, 0.58])
+        default_factory=lambda: np.array([0.62, 0.05, 0.12])
     )
-    failure_xy_threshold: float = 0.03
+    failure_xy_threshold: float = 0.012
+    failure_z_gap_threshold: float = 0.012
     failure_tip_z_threshold: float = 0.075
 
-    max_episode_steps: int = 200
+    max_episode_steps: int = 1000
 
     # Shared task-space velocity controller parameters.
     input_deadzone: float = 0.05
@@ -196,10 +202,7 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             {"state": spaces.Dict(state_spaces)}
         )
 
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[self._qpos_addrs] = self.cfg.home_qpos.copy()
-        self.data.ctrl[self._actuator_ids] = self.cfg.home_qpos.copy()
-        mujoco.mj_forward(self.model, self.data)
+        self._reset_to_home_state()
 
         self._preinsert_tip_pos, self._target_tip_rot = self._get_ee_pose()
         self._socket_pos, self._socket_rot = self._get_socket_pose()
@@ -285,15 +288,28 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             )
         )
 
+        aligned_for_depth = (
+            xy_error < cfg.reward_depth_xy_threshold
+            and rot_error < cfg.reward_depth_rot_threshold
+        )
+        depth_reward = (
+            cfg.reward_depth_weight * normalized_depth
+            if aligned_for_depth
+            else 0.0
+        )
+
         reward = (
             -cfg.reward_xy_weight * xy_error
             - cfg.reward_z_weight * z_gap
             - cfg.reward_rot_weight * rot_error
-            + cfg.reward_depth_weight * normalized_depth
+            + depth_reward
+            - cfg.reward_step_penalty
         )
 
         if self._is_success(tip_pos, tip_rot):
             reward += cfg.reward_success_bonus
+        elif self._is_failure(tip_pos):
+            reward -= cfg.reward_failure_penalty
 
         return float(reward)
 
@@ -384,10 +400,10 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             )
 
             self.data.qpos[self._qpos_addrs] = q
-            self.data.ctrl[self._actuator_ids] = q
+            self._sync_actuator_ctrl_to_current_state()
             mujoco.mj_forward(self.model, self.data)
 
-        self.data.ctrl[self._actuator_ids] = self.data.qpos[self._qpos_addrs].copy()
+        self._sync_actuator_ctrl_to_current_state()
         mujoco.mj_forward(self.model, self.data)
 
     def _get_socket_pose(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -447,11 +463,12 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
     def _is_success(self, tip_pos: np.ndarray, tip_rot: np.ndarray) -> bool:
         cfg = self.insertion_cfg
         xy_error = np.linalg.norm(tip_pos[:2] - self._socket_pos[:2])
+        z_gap = max(float(tip_pos[2] - self._socket_pos[2]), 0.0)
         rot_error = self._compute_rotation_error(tip_rot)
         return bool(
             xy_error < cfg.success_xy_threshold
             and rot_error < cfg.success_rot_threshold
-            and tip_pos[2] <= cfg.success_tip_z_threshold
+            and z_gap < cfg.success_z_gap_threshold
         )
 
     def _is_failure(self, tip_pos: np.ndarray) -> bool:
@@ -460,8 +477,9 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             tip_pos > cfg.workspace_high
         )
         xy_error = np.linalg.norm(tip_pos[:2] - self._socket_pos[:2])
+        z_gap = max(float(tip_pos[2] - self._socket_pos[2]), 0.0)
         obvious_misalignment = (
-            tip_pos[2] <= cfg.failure_tip_z_threshold
+            z_gap < cfg.failure_z_gap_threshold
             and xy_error > cfg.failure_xy_threshold
         )
         return bool(out_of_workspace or obvious_misalignment)
