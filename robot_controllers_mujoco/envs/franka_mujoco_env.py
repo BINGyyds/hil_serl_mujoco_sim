@@ -249,13 +249,7 @@ class FrankaMujocoEnv(gym.Env):
         ee_rot_mat = self.data.site_xmat[self._ee_site_id].reshape(3, 3)
         ee_quat = Rotation.from_matrix(ee_rot_mat).as_quat()  # xyzw
 
-        # Compute EE velocity via site Jacobian
-        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
-        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
-        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)
-        full_qvel = self.data.qvel.copy()
-        ee_lin_vel = jacp @ full_qvel
-        ee_ang_vel = jacr @ full_qvel
+        ee_lin_vel, ee_ang_vel = self._get_ee_velocity()
         tcp_vel = np.concatenate([ee_lin_vel, ee_ang_vel])
 
         tcp_pose = np.concatenate([ee_pos, ee_quat])
@@ -274,6 +268,16 @@ class FrankaMujocoEnv(gym.Env):
         pos = self.data.site_xpos[self._ee_site_id].copy()
         rot = self.data.site_xmat[self._ee_site_id].reshape(3, 3).copy()
         return pos, rot
+
+    def _get_ee_velocity(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return end-effector linear and angular velocity in the world frame."""
+        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)
+        full_qvel = self.data.qvel.copy()
+        ee_lin_vel = jacp @ full_qvel
+        ee_ang_vel = jacr @ full_qvel
+        return ee_lin_vel, ee_ang_vel
 
     # ------------------------------------------------------------------
     # Cartesian → Joint conversion

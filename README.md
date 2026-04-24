@@ -160,6 +160,7 @@ python scripts/record_demos_mujoco.py \
 - 控制链：与本地 debug teleop 共享的 `TeleopRuntime` + task-space velocity controller
 - action 语义：平移为世界坐标系，旋转为末端本体坐标系
 - velocity 控制：显式启用 MuJoCo bias/gravity compensation
+- insertion reward：对齐后使用弱绝对深度 shaping，success bonus 为主导，depth reward 只提供轻量向下引导
 - 输出：可直接供 learner 加载的 demo `pkl`
 
 ## SpaceMouse 说明

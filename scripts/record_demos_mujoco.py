@@ -350,7 +350,9 @@ def main() -> None:
                     f"({len(episode_transitions)} steps, "
                     f"xy_error={info.get('xy_error', 0.0):.4f}, "
                     f"z_gap={info.get('z_gap', 0.0):.4f}, "
-                    f"rot_error={info.get('rot_error', 0.0):.4f})"
+                    f"rot_error={info.get('rot_error', 0.0):.4f}, "
+                    f"linear_speed={info.get('tcp_linear_speed', 0.0):.4f}, "
+                    f"angular_speed={info.get('tcp_angular_speed', 0.0):.4f})"
                 )
                 episode_transitions = []
                 obs, _ = env.reset()
@@ -365,7 +367,9 @@ def main() -> None:
                     f"success={info.get('success', False)}, "
                     f"xy_error={info.get('xy_error', 0.0):.4f}, "
                     f"z_gap={info.get('z_gap', 0.0):.4f}, "
-                    f"rot_error={info.get('rot_error', 0.0):.4f})"
+                    f"rot_error={info.get('rot_error', 0.0):.4f}, "
+                    f"linear_speed={info.get('tcp_linear_speed', 0.0):.4f}, "
+                    f"angular_speed={info.get('tcp_angular_speed', 0.0):.4f})"
                 )
                 episode_transitions = []
                 obs, _ = env.reset()

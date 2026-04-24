@@ -53,16 +53,20 @@ class InsertionConfig(FrankaMujocoConfig):
     reward_z_weight: float = 1.5
     reward_rot_weight: float = 0.3
     reward_depth_weight: float = 2.0
-    reward_success_bonus: float = 100.0
+    reward_success_bonus: float = 2000.0
     reward_failure_penalty: float = 25.0
     reward_step_penalty: float = 0.01
     reward_depth_xy_threshold: float = 0.004
     reward_depth_rot_threshold: float = 0.12
+    # Reserved for potential incremental depth shaping; currently unused.
+    reward_depth_deadband: float = 0.0002
 
     # Success thresholds.
-    success_xy_threshold: float = 0.004
-    success_rot_threshold: float = 0.12
-    success_z_gap_threshold: float = 0.006
+    success_xy_threshold: float = 0.002
+    success_rot_threshold: float = 0.1
+    success_z_gap_threshold: float = 0.002
+    success_linear_velocity_threshold: float = 0.01
+    success_angular_velocity_threshold: float = 0.05
     success_tip_z_threshold: float = 0.105
 
     # Failure / workspace bounds.
@@ -209,7 +213,6 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         self._max_insertion_depth = max(
             float(self._preinsert_tip_pos[2] - self._socket_pos[2]), 1e-6
         )
-
     def reset(
         self,
         *,
@@ -280,23 +283,17 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         xy_error = float(np.linalg.norm(tip_pos[:2] - socket_pos[:2]))
         z_gap = float(max(tip_pos[2] - socket_pos[2], 0.0))
         rot_error = self._compute_rotation_error(tip_rot)
-        normalized_depth = float(
-            np.clip(
-                (self._preinsert_tip_pos[2] - tip_pos[2]) / self._max_insertion_depth,
-                0.0,
-                1.0,
-            )
-        )
+        current_insertion_depth = float(obs["state"]["insertion_depth"][0])
+        normalized_depth = current_insertion_depth / self._max_insertion_depth
 
         aligned_for_depth = (
             xy_error < cfg.reward_depth_xy_threshold
             and rot_error < cfg.reward_depth_rot_threshold
         )
-        depth_reward = (
-            cfg.reward_depth_weight * normalized_depth
-            if aligned_for_depth
-            else 0.0
-        )
+        if aligned_for_depth:
+            depth_reward = cfg.reward_depth_weight * normalized_depth
+        else:
+            depth_reward = 0.0
 
         reward = (
             -cfg.reward_xy_weight * xy_error
@@ -319,11 +316,14 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
     def _get_info(self, obs: Dict) -> Dict[str, Any]:
         tip_pos, tip_rot = self._get_ee_pose()
+        tip_lin_vel, tip_ang_vel = self._get_ee_velocity()
         socket_pos, _ = self._get_socket_pose()
 
         xy_error = float(np.linalg.norm(tip_pos[:2] - socket_pos[:2]))
         z_gap = float(max(tip_pos[2] - socket_pos[2], 0.0))
         rot_error = self._compute_rotation_error(tip_rot)
+        linear_speed = float(np.linalg.norm(tip_lin_vel))
+        angular_speed = float(np.linalg.norm(tip_ang_vel))
         insertion_depth = float(
             np.clip(
                 self._preinsert_tip_pos[2] - tip_pos[2],
@@ -338,6 +338,8 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             "xy_error": xy_error,
             "z_gap": z_gap,
             "rot_error": rot_error,
+            "tcp_linear_speed": linear_speed,
+            "tcp_angular_speed": angular_speed,
             "insertion_depth": insertion_depth,
             "success": success,
             "failure": failure,
@@ -462,13 +464,18 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
     def _is_success(self, tip_pos: np.ndarray, tip_rot: np.ndarray) -> bool:
         cfg = self.insertion_cfg
+        tip_lin_vel, tip_ang_vel = self._get_ee_velocity()
         xy_error = np.linalg.norm(tip_pos[:2] - self._socket_pos[:2])
         z_gap = max(float(tip_pos[2] - self._socket_pos[2]), 0.0)
         rot_error = self._compute_rotation_error(tip_rot)
+        linear_speed = np.linalg.norm(tip_lin_vel)
+        angular_speed = np.linalg.norm(tip_ang_vel)
         return bool(
             xy_error < cfg.success_xy_threshold
             and rot_error < cfg.success_rot_threshold
             and z_gap < cfg.success_z_gap_threshold
+            and linear_speed < cfg.success_linear_velocity_threshold
+            and angular_speed < cfg.success_angular_velocity_threshold
         )
 
     def _is_failure(self, tip_pos: np.ndarray) -> bool:

@@ -1,7 +1,7 @@
 <mujoco model="panda nohand velocity">
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
 
-  <option integrator="implicitfast" impratio="10" sdf_iterations="20" sdf_initpoints="40"/>
+  <option integrator="implicitfast" impratio="10"/>
 
   <visual>
     <global offwidth="1280" offheight="720"/>
@@ -53,8 +53,40 @@
     <mesh name="link5_c2" file="link5_collision_2.obj"/>
     <mesh name="link6_c" file="link6.stl"/>
     <mesh name="link7_c" file="link7.stl"/>
-    <mesh name="tool_male_c" file="tool_male.STL"/>
-    <mesh name="tool_socket_c" file="tool_socket.STL"/>
+    <mesh name="tool_male_c0" file="tool_male_convex_0.obj"/>
+    <mesh name="tool_male_c1" file="tool_male_convex_1.obj"/>
+    <mesh name="tool_male_c2" file="tool_male_convex_2.obj"/>
+    <mesh name="tool_socket_c0" file="tool_socket_convex_0.obj"/>
+    <mesh name="tool_socket_c1" file="tool_socket_convex_1.obj"/>
+    <mesh name="tool_socket_c2" file="tool_socket_convex_2.obj"/>
+    <mesh name="tool_socket_c3" file="tool_socket_convex_3.obj"/>
+    <mesh name="tool_socket_c4" file="tool_socket_convex_4.obj"/>
+    <mesh name="tool_socket_c5" file="tool_socket_convex_5.obj"/>
+    <mesh name="tool_socket_c6" file="tool_socket_convex_6.obj"/>
+    <mesh name="tool_socket_c7" file="tool_socket_convex_7.obj"/>
+    <mesh name="tool_socket_c8" file="tool_socket_convex_8.obj"/>
+    <mesh name="tool_socket_c9" file="tool_socket_convex_9.obj"/>
+    <mesh name="tool_socket_c10" file="tool_socket_convex_10.obj"/>
+    <mesh name="tool_socket_c11" file="tool_socket_convex_11.obj"/>
+    <mesh name="tool_socket_c12" file="tool_socket_convex_12.obj"/>
+    <mesh name="tool_socket_c13" file="tool_socket_convex_13.obj"/>
+    <mesh name="tool_socket_c14" file="tool_socket_convex_14.obj"/>
+    <mesh name="tool_socket_c15" file="tool_socket_convex_15.obj"/>
+    <mesh name="tool_socket_c16" file="tool_socket_convex_16.obj"/>
+    <mesh name="tool_socket_c17" file="tool_socket_convex_17.obj"/>
+    <mesh name="tool_socket_c18" file="tool_socket_convex_18.obj"/>
+    <mesh name="tool_socket_c19" file="tool_socket_convex_19.obj"/>
+    <mesh name="tool_socket_c20" file="tool_socket_convex_20.obj"/>
+    <mesh name="tool_socket_c21" file="tool_socket_convex_21.obj"/>
+    <mesh name="tool_socket_c22" file="tool_socket_convex_22.obj"/>
+    <mesh name="tool_socket_c23" file="tool_socket_convex_23.obj"/>
+    <mesh name="tool_socket_c24" file="tool_socket_convex_24.obj"/>
+    <mesh name="tool_socket_c25" file="tool_socket_convex_25.obj"/>
+    <mesh name="tool_socket_c26" file="tool_socket_convex_26.obj"/>
+    <mesh name="tool_socket_c27" file="tool_socket_convex_27.obj"/>
+    <mesh name="tool_socket_c28" file="tool_socket_convex_28.obj"/>
+    <mesh name="tool_socket_c29" file="tool_socket_convex_29.obj"/>
+    <mesh name="tool_socket_c30" file="tool_socket_convex_30.obj"/>
 
     <!-- Visual meshes -->
     <mesh file="link0_0.obj"/>
@@ -219,8 +251,9 @@
                           castshadow="false"/>
                         <geom mesh="tool_male_v" class="panda/visual" rgba="0.0 1.0 0.0 1.0"
                           quat="0.707106781187 0.707106781187 0 0"/>
-                        <geom type="sdf" mesh="tool_male_c" class="panda/collision"
-                          quat="0.707106781187 0.707106781187 0 0"/>
+                        <geom mesh="tool_male_c0" class="panda/collision" quat="0.707106781187 0.707106781187 0 0"/>
+                        <geom mesh="tool_male_c1" class="panda/collision" quat="0.707106781187 0.707106781187 0 0"/>
+                        <geom mesh="tool_male_c2" class="panda/collision" quat="0.707106781187 0.707106781187 0 0"/>
                         <site name="tool_tip_site" pos="0 0 0.022"/>
                       </body>
                     </body>
@@ -235,7 +268,37 @@
     <body name="tool_socket" pos="0.551995697 -0.0000519764153 0.0">
       <geom mesh="tool_socket_v" class="panda/visual" rgba="1.0 0.0 0.0 1.0"
         quat="0.5 0.5 0.5 0.5"/>
-      <geom type="sdf" mesh="tool_socket_c" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c0" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c1" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c2" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c3" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c4" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c5" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c6" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c7" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c8" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c9" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c10" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c11" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c12" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c13" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c14" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c15" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c16" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c17" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c18" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c19" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c20" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c21" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c22" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c23" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c24" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c25" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c26" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c27" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c28" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c29" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
+      <geom mesh="tool_socket_c30" class="panda/collision" quat="0.5 0.5 0.5 0.5"/>
       <site name="tool_socket_center_site" pos="0 0 0.002"/>
     </body>
   </worldbody>
