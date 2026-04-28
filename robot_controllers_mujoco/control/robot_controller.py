@@ -89,7 +89,7 @@ class RobotController:
             set_joint_velocity=self._send_joint_velocity_command_to_mujoco,
             step_simulation=self.mujoco_interface.step,
             control_dt=config.sim.timestep,
-            get_wrench_world=self.mujoco_interface.get_end_effector_wrench_world,
+            get_wrench_local=self.mujoco_interface.get_end_effector_wrench_local,
             tare_wrench=self.mujoco_interface.tare_end_effector_wrench,
             enable_admittance=config.teleop.enable_admittance,
         )

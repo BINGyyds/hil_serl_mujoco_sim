@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 
 class TaskSpaceVelocityController:
-    """Stateful task-space controller with optional world-frame admittance."""
+    """带可选几何导纳层的任务空间速度控制器。"""
 
     def __init__(
         self,
@@ -72,7 +72,9 @@ class TaskSpaceVelocityController:
             size=3,
             fill=np.inf,
         )
-        self.max_torque_world = self._coerce_vector(
+        # 配置名沿用 max_torque_world 以兼容历史 override；几何导纳内部按
+        # tool-tip 本体坐标系 torque 使用。
+        self.max_torque_body = self._coerce_vector(
             max_torque_world,
             size=3,
             fill=np.inf,
@@ -100,9 +102,12 @@ class TaskSpaceVelocityController:
         )
 
         self.filtered_command = np.zeros(6, dtype=np.float64)
-        self.filtered_wrench_world = np.zeros(6, dtype=np.float64)
-        self.compliance_offset_world = np.zeros(6, dtype=np.float64)
-        self.compliance_twist_world = np.zeros(6, dtype=np.float64)
+        self.filtered_force_world = np.zeros(3, dtype=np.float64)
+        self.filtered_torque_body = np.zeros(3, dtype=np.float64)
+        self.compliance_position_world = np.zeros(3, dtype=np.float64)
+        self.compliance_linear_velocity_world = np.zeros(3, dtype=np.float64)
+        self.compliance_rotation_body = np.zeros(3, dtype=np.float64)
+        self.compliance_angular_velocity_body = np.zeros(3, dtype=np.float64)
         self.filtered_joint_velocity_command = np.zeros_like(
             self.joint_velocity_limits,
             dtype=np.float64,
@@ -133,7 +138,7 @@ class TaskSpaceVelocityController:
         current_q: np.ndarray,
         posture_reference: Optional[np.ndarray] = None,
     ) -> None:
-        """Reset controller state to the current robot pose."""
+        """将控制器内部状态重置到当前机器人位姿。"""
         current_transform = np.asarray(current_transform, dtype=np.float64)
         self.target_transform = current_transform.copy()
         self.virtual_transform = current_transform.copy()
@@ -146,19 +151,22 @@ class TaskSpaceVelocityController:
             ).copy()
 
         self.filtered_command[:] = 0.0
-        self.filtered_wrench_world[:] = 0.0
-        self.compliance_offset_world[:] = 0.0
-        self.compliance_twist_world[:] = 0.0
+        self.filtered_force_world[:] = 0.0
+        self.filtered_torque_body[:] = 0.0
+        self.compliance_position_world[:] = 0.0
+        self.compliance_linear_velocity_world[:] = 0.0
+        self.compliance_rotation_body[:] = 0.0
+        self.compliance_angular_velocity_body[:] = 0.0
         self.filtered_joint_velocity_command[:] = 0.0
 
     def get_target_transform(self) -> Optional[np.ndarray]:
-        """Return a copy of the currently integrated target pose."""
+        """返回当前积分得到的名义目标位姿副本。"""
         if self.target_transform is None:
             return None
         return self.target_transform.copy()
 
     def get_virtual_transform(self) -> Optional[np.ndarray]:
-        """Return a copy of the world-frame admittance-compensated target pose."""
+        """返回导纳补偿后的虚拟目标位姿副本。"""
         if self.virtual_transform is None:
             return None
         return self.virtual_transform.copy()
@@ -171,7 +179,7 @@ class TaskSpaceVelocityController:
         jacobian: np.ndarray,
         current_q: np.ndarray,
         dt: float,
-        wrench_world: Optional[np.ndarray] = None,
+        wrench_local: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """根据归一化 6D 输入计算关节速度命令。
 
@@ -190,10 +198,14 @@ class TaskSpaceVelocityController:
 
         tracking_transform = self.target_transform
         if self.enable_admittance:
-            filtered_wrench_world = self._filter_wrench_world(wrench_world)
+            force_world, torque_body = self._filter_wrench_local(
+                wrench_local=wrench_local,
+                current_rotation=np.asarray(current_transform, dtype=np.float64)[:3, :3],
+            )
             self._update_virtual_transform(
                 dt=float(dt),
-                wrench_world=filtered_wrench_world,
+                force_world=force_world,
+                torque_body=torque_body,
             )
             tracking_transform = self.virtual_transform
         else:
@@ -261,95 +273,208 @@ class TaskSpaceVelocityController:
         self.target_transform[:3, :3] = target_rotation
         self.target_transform[:3, 3] = target_position
 
-    def _filter_wrench_world(self, wrench_world: Optional[np.ndarray]) -> np.ndarray:
-        if wrench_world is None:
-            filtered_input = np.zeros(6, dtype=np.float64)
+    def _filter_wrench_local(
+        self,
+        *,
+        wrench_local: Optional[np.ndarray],
+        current_rotation: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """读取本体系 wrench，并分别得到世界系 force 和本体系 torque。"""
+        if wrench_local is None:
+            force_body = np.zeros(3, dtype=np.float64)
+            torque_body = np.zeros(3, dtype=np.float64)
         else:
-            filtered_input = np.asarray(wrench_world, dtype=np.float64).reshape((-1,))
-            if filtered_input.shape != (6,):
+            wrench = np.asarray(wrench_local, dtype=np.float64).reshape((-1,))
+            if wrench.shape != (6,):
                 raise ValueError(
-                    f"Expected world-frame wrench shape (6,), got {filtered_input.shape}"
+                    f"Expected local-frame wrench shape (6,), got {wrench.shape}"
                 )
+            force_body = wrench[:3].copy()
+            torque_body = wrench[3:].copy()
 
-        filtered_input = filtered_input.copy()
-        filtered_input[:3][np.abs(filtered_input[:3]) < self.force_deadband] = 0.0
-        filtered_input[3:][np.abs(filtered_input[3:]) < self.torque_deadband] = 0.0
-        filtered_input[:3] = np.clip(
-            filtered_input[:3],
+        force_world = current_rotation @ force_body
+        force_world[np.abs(force_world) < self.force_deadband] = 0.0
+        torque_body[np.abs(torque_body) < self.torque_deadband] = 0.0
+        force_world = np.clip(
+            force_world,
             -self.max_force_world,
             self.max_force_world,
         )
-        filtered_input[3:] = np.clip(
-            filtered_input[3:],
-            -self.max_torque_world,
-            self.max_torque_world,
+        torque_body = np.clip(
+            torque_body,
+            -self.max_torque_body,
+            self.max_torque_body,
         )
-        self.filtered_wrench_world = (
-            self.wrench_filter_alpha * filtered_input
-            + (1.0 - self.wrench_filter_alpha) * self.filtered_wrench_world
+        self.filtered_force_world = (
+            self.wrench_filter_alpha * force_world
+            + (1.0 - self.wrench_filter_alpha) * self.filtered_force_world
         )
-        return self.filtered_wrench_world.copy()
+        self.filtered_torque_body = (
+            self.wrench_filter_alpha * torque_body
+            + (1.0 - self.wrench_filter_alpha) * self.filtered_torque_body
+        )
+        return self.filtered_force_world.copy(), self.filtered_torque_body.copy()
 
     def _update_virtual_transform(
         self,
         *,
         dt: float,
-        wrench_world: np.ndarray,
+        force_world: np.ndarray,
+        torque_body: np.ndarray,
     ) -> None:
         """更新可选的导纳目标偏置。
 
-        存储的柔顺状态是相对名义目标的偏置，因此 wrench 输入消失后会衰减回
-        零，而不是永久漂移操作者或 policy 的参考目标。
+        平移柔顺在世界坐标系下积分；旋转柔顺采用 body/right-invariant SO(3)
+        导纳。两者都是相对名义目标的偏置，wrench 消失后会衰减回零。
         """
         if self.target_transform is None:
             raise RuntimeError("Task-space target transform is not initialized.")
 
-        acceleration_world = (
-            wrench_world
-            - self.admittance_damping * self.compliance_twist_world
-            - self.admittance_stiffness * self.compliance_offset_world
-        ) / self.admittance_mass
-
-        self.compliance_twist_world = (
-            self.compliance_twist_world + acceleration_world * dt
+        self._integrate_translation_admittance_rk4(
+            dt=dt,
+            force_world=force_world,
         )
-        self.compliance_twist_world[:3] = np.clip(
-            self.compliance_twist_world[:3],
-            -self.max_compliance_linear_velocity,
-            self.max_compliance_linear_velocity,
-        )
-        self.compliance_twist_world[3:] = np.clip(
-            self.compliance_twist_world[3:],
-            -self.max_compliance_angular_velocity,
-            self.max_compliance_angular_velocity,
-        )
-
-        self.compliance_offset_world = (
-            self.compliance_offset_world + self.compliance_twist_world * dt
-        )
-        self.compliance_offset_world[:3] = np.clip(
-            self.compliance_offset_world[:3],
-            -self.max_compliance_linear_offset,
-            self.max_compliance_linear_offset,
-        )
-        self.compliance_offset_world[3:] = np.clip(
-            self.compliance_offset_world[3:],
-            -self.max_compliance_angular_offset,
-            self.max_compliance_angular_offset,
+        self._integrate_rotation_admittance_rk4(
+            dt=dt,
+            torque_body=torque_body,
         )
 
         target_rotation = self.target_transform[:3, :3]
         target_position = self.target_transform[:3, 3]
-        virtual_rotation = (
-            Rotation.from_rotvec(self.compliance_offset_world[3:]).as_matrix()
-            @ target_rotation
-        )
+        rotation_offset_body = self._exp_so3(self.compliance_rotation_body)
+        virtual_rotation = target_rotation @ rotation_offset_body
 
         self.virtual_transform = np.eye(4, dtype=np.float64)
         self.virtual_transform[:3, :3] = self._project_rotation_matrix(virtual_rotation)
         self.virtual_transform[:3, 3] = (
-            target_position + self.compliance_offset_world[:3]
+            target_position + self.compliance_position_world
         )
+
+    def _translation_acceleration(
+        self,
+        position_world: np.ndarray,
+        velocity_world: np.ndarray,
+        force_world: np.ndarray,
+    ) -> np.ndarray:
+        mass = self.admittance_mass[:3]
+        damping = self.admittance_damping[:3]
+        stiffness = self.admittance_stiffness[:3]
+        return (
+            force_world - damping * velocity_world - stiffness * position_world
+        ) / mass
+
+    def _integrate_translation_admittance_rk4(
+        self,
+        *,
+        dt: float,
+        force_world: np.ndarray,
+    ) -> None:
+        """用 RK4 积分世界系平移导纳二阶系统。"""
+        h = float(dt)
+        p = self.compliance_position_world
+        v = self.compliance_linear_velocity_world
+
+        k1_v = self._translation_acceleration(p, v, force_world)
+        k1_p = v
+        k2_v = self._translation_acceleration(
+            p + 0.5 * h * k1_p,
+            v + 0.5 * h * k1_v,
+            force_world,
+        )
+        k2_p = v + 0.5 * h * k1_v
+        k3_v = self._translation_acceleration(
+            p + 0.5 * h * k2_p,
+            v + 0.5 * h * k2_v,
+            force_world,
+        )
+        k3_p = v + 0.5 * h * k2_v
+        k4_v = self._translation_acceleration(
+            p + h * k3_p,
+            v + h * k3_v,
+            force_world,
+        )
+        k4_p = v + h * k3_v
+
+        self.compliance_linear_velocity_world = v + h / 6.0 * (
+            k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v
+        )
+        self.compliance_linear_velocity_world = np.clip(
+            self.compliance_linear_velocity_world,
+            -self.max_compliance_linear_velocity,
+            self.max_compliance_linear_velocity,
+        )
+        self.compliance_position_world = p + h / 6.0 * (
+            k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p
+        )
+        self.compliance_position_world = np.clip(
+            self.compliance_position_world,
+            -self.max_compliance_linear_offset,
+            self.max_compliance_linear_offset,
+        )
+
+    def _rotation_acceleration_body(
+        self,
+        rotation_offset_body: np.ndarray,
+        angular_velocity_body: np.ndarray,
+        torque_body: np.ndarray,
+    ) -> np.ndarray:
+        mass = self.admittance_mass[3:]
+        damping = self.admittance_damping[3:]
+        stiffness = self.admittance_stiffness[3:]
+        phi_body = self._log_so3(rotation_offset_body)
+        return (
+            torque_body - damping * angular_velocity_body - stiffness * phi_body
+        ) / mass
+
+    def _integrate_rotation_admittance_rk4(
+        self,
+        *,
+        dt: float,
+        torque_body: np.ndarray,
+    ) -> None:
+        """用 body/right-invariant SO(3) RK4 积分旋转导纳。"""
+        h = float(dt)
+        rotation_offset = self._exp_so3(self.compliance_rotation_body)
+        omega = self.compliance_angular_velocity_body
+
+        k1_w = self._rotation_acceleration_body(rotation_offset, omega, torque_body)
+
+        omega2 = omega + 0.5 * h * k1_w
+        rotation2 = rotation_offset @ self._exp_so3(omega * 0.5 * h)
+        k2_w = self._rotation_acceleration_body(rotation2, omega2, torque_body)
+
+        omega3 = omega + 0.5 * h * k2_w
+        rotation3 = rotation_offset @ self._exp_so3(omega2 * 0.5 * h)
+        k3_w = self._rotation_acceleration_body(rotation3, omega3, torque_body)
+
+        omega4 = omega + h * k3_w
+        rotation4 = rotation_offset @ self._exp_so3(omega3 * h)
+        k4_w = self._rotation_acceleration_body(rotation4, omega4, torque_body)
+
+        self.compliance_angular_velocity_body = omega + h / 6.0 * (
+            k1_w + 2.0 * k2_w + 2.0 * k3_w + k4_w
+        )
+        self.compliance_angular_velocity_body = np.clip(
+            self.compliance_angular_velocity_body,
+            -self.max_compliance_angular_velocity,
+            self.max_compliance_angular_velocity,
+        )
+        rotation_next = rotation_offset @ self._exp_so3(
+            self.compliance_angular_velocity_body * h
+        )
+        phi_next = self._log_so3(self._project_rotation_matrix(rotation_next))
+        phi_norm = np.linalg.norm(phi_next)
+        if phi_norm > self.max_compliance_angular_offset > 0.0:
+            phi_next *= self.max_compliance_angular_offset / phi_norm
+        self.compliance_rotation_body = phi_next
+
+    @staticmethod
+    def _exp_so3(rotvec: np.ndarray) -> np.ndarray:
+        return Rotation.from_rotvec(rotvec).as_matrix()
+
+    @staticmethod
+    def _log_so3(rotation_matrix: np.ndarray) -> np.ndarray:
+        return Rotation.from_matrix(rotation_matrix).as_rotvec()
 
     @staticmethod
     def _project_rotation_matrix(rotation_matrix: np.ndarray) -> np.ndarray:

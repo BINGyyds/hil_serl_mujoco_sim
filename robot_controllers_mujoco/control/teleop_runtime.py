@@ -19,22 +19,20 @@ WrenchTare = Callable[[], None]
 
 @dataclass(frozen=True)
 class TeleopStepResult:
-    """Result from one shared teleop/action control step."""
+    """一次共享 teleop/action 控制步的结果。"""
 
     joint_velocity_command: np.ndarray
 
 
 class TeleopRuntime:
-    """
-    Shared task-space velocity runtime.
+    """共享任务空间速度控制运行时。
 
-    Action convention:
-        * action[0:3] is a world-frame translation command.
-        * action[3:6] is an end-effector-local rotation command.
+    action 约定：
+        * action[0:3] 是世界系平移命令。
+        * action[3:6] 是末端本体系旋转命令。
 
-    The frame semantics are implemented by TaskSpaceVelocityController; this
-    class owns the surrounding runtime plumbing so manual teleop, demo
-    recording, and actor intervention call the same control path.
+    坐标系语义由 TaskSpaceVelocityController 实现；该类只负责外围运行时胶水，
+    使手动 teleop、demo 录制和 actor intervention 可以调用同一条控制路径。
     """
 
     def __init__(
@@ -45,7 +43,7 @@ class TeleopRuntime:
         set_joint_velocity: JointVelocitySetter,
         step_simulation: SimulationStepper,
         control_dt: float,
-        get_wrench_world: Optional[WrenchProvider] = None,
+        get_wrench_local: Optional[WrenchProvider] = None,
         tare_wrench: Optional[WrenchTare] = None,
         enable_admittance: bool = False,
     ) -> None:
@@ -54,7 +52,7 @@ class TeleopRuntime:
         self.set_joint_velocity = set_joint_velocity
         self.step_simulation = step_simulation
         self.control_dt = float(control_dt)
-        self.get_wrench_world = get_wrench_world
+        self.get_wrench_local = get_wrench_local
         self.tare_wrench = tare_wrench
         self.enable_admittance = bool(enable_admittance)
 
@@ -74,9 +72,9 @@ class TeleopRuntime:
         dt: Optional[float] = None,
     ) -> np.ndarray:
         current_q, current_transform, jacobian = self.get_control_state()
-        wrench_world = None
-        if self.enable_admittance and self.get_wrench_world is not None:
-            wrench_world = self.get_wrench_world()
+        wrench_local = None
+        if self.enable_admittance and self.get_wrench_local is not None:
+            wrench_local = self.get_wrench_local()
 
         return self.controller.compute_command(
             raw_action=np.asarray(action, dtype=np.float64).reshape((6,)),
@@ -84,7 +82,7 @@ class TeleopRuntime:
             current_transform=current_transform,
             jacobian=jacobian,
             dt=self.control_dt if dt is None else float(dt),
-            wrench_world=wrench_world,
+            wrench_local=wrench_local,
         )
 
     def step(
