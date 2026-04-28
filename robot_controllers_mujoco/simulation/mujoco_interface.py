@@ -5,9 +5,12 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 from mujoco import MjvCamera
-from scipy.spatial.transform import Rotation
 
 from robot_controllers_mujoco.common.config import ProjectConfig
+from robot_controllers_mujoco.simulation.site_ik_solver import (
+    SiteIKOptions,
+    solve_site_pose_ik,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -337,62 +340,47 @@ class MujocoInterface:
         step_scale: float = 0.6,
         max_step_norm: float = 0.2,
     ) -> np.ndarray:
-        """用 MuJoCo 的真实 site FK/Jacobian 求解 7 关节 IK。"""
-        target_matrix = np.asarray(target_transform, dtype=np.float64).reshape((4, 4))
-        target_position = target_matrix[:3, 3]
-        target_rotation = target_matrix[:3, :3]
+        """用共享的有界非线性最小二乘后端求解 site IK。
+
+        ``damping``、``step_scale`` 和 ``max_step_norm`` 是旧 DLS 接口参数，
+        这里保留签名以兼容轨迹规划调用，但主求解逻辑由
+        :mod:`robot_controllers_mujoco.simulation.site_ik_solver` 负责。
+        """
         site_id = self._get_site_id(site_name)
-        q = np.asarray(q_init, dtype=np.float64).reshape(
-            (len(self.arm_joint_ids),)
-        ).copy()
         finite_limits = np.isfinite(self.arm_joint_lower_limits) & np.isfinite(
             self.arm_joint_upper_limits
         )
-        base_qpos = self.data.qpos.copy()
-
-        for _ in range(max_iterations):
-            self.ik_data.qpos[:] = base_qpos
-            self.ik_data.qvel[:] = 0.0
-            self.ik_data.qpos[self.arm_qpos_addrs] = q
-            mujoco.mj_forward(self.model, self.ik_data)
-
-            current_transform = self._get_site_transform_from_data(
-                self.ik_data,
-                site_id,
-            )
-            current_position = current_transform[:3, 3]
-            current_rotation = current_transform[:3, :3]
-            position_error = target_position - current_position
-            rotation_error = Rotation.from_matrix(
-                target_rotation @ current_rotation.T
-            ).as_rotvec()
-            error = np.concatenate([position_error, rotation_error])
-
-            if np.linalg.norm(error) < tolerance:
-                return q.copy()
-
-            jacobian = self._get_site_world_jacobian_from_data(self.ik_data, site_id)
-            jjt = jacobian @ jacobian.T
-            delta_q = jacobian.T @ np.linalg.solve(
-                jjt + damping * np.eye(6, dtype=np.float64),
-                error,
-            )
-
-            delta_norm = np.linalg.norm(delta_q)
-            if delta_norm > max_step_norm:
-                delta_q *= max_step_norm / delta_norm
-
-            q = q + step_scale * delta_q
-            q[finite_limits] = np.clip(
-                q[finite_limits],
-                self.arm_joint_lower_limits[finite_limits],
-                self.arm_joint_upper_limits[finite_limits],
-            )
-
-        raise ValueError(
-            f"MuJoCo site IK 未收敛: iterations={max_iterations}, "
-            f"target_position={target_position.tolist()}"
+        q_center = np.asarray(q_init, dtype=np.float64).reshape(
+            (len(self.arm_joint_ids),)
+        ).copy()
+        q_center[finite_limits] = 0.5 * (
+            self.arm_joint_lower_limits[finite_limits]
+            + self.arm_joint_upper_limits[finite_limits]
         )
+
+        self.ik_data.qpos[:] = self.data.qpos
+        self.ik_data.qvel[:] = self.data.qvel
+        result = solve_site_pose_ik(
+            model=self.model,
+            data=self.ik_data,
+            target_transform=target_transform,
+            q_seed=q_init,
+            qpos_addrs=self.arm_qpos_addrs,
+            dof_addrs=self.arm_dof_addrs,
+            q_low=self.arm_joint_lower_limits,
+            q_high=self.arm_joint_upper_limits,
+            site_id=site_id,
+            options=SiteIKOptions(
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                position_weight=1.0,
+                rotation_weight=1.0,
+                seed_weight=0.0,
+                center_weight=0.0,
+            ),
+            extra_seeds=[q_center],
+        )
+        return result.q.copy()
 
     def get_attachment_pose(self) -> Tuple[np.ndarray, np.ndarray]:
         """获取末端 attachment body 的当前世界位置和四元数姿态。

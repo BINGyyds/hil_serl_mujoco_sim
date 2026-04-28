@@ -25,6 +25,10 @@ from robot_controllers_mujoco.envs.franka_mujoco_env import (
     FrankaMujocoConfig,
     FrankaMujocoEnv,
 )
+from robot_controllers_mujoco.simulation.site_ik_solver import (
+    SiteIKOptions,
+    solve_site_pose_ik,
+)
 
 
 @dataclass
@@ -42,11 +46,18 @@ class InsertionConfig(FrankaMujocoConfig):
     )
     reset_yaw_range: float = 0.08
 
-    # Damped least-squares IK used during reset randomisation.
+    # reset 随机化阶段使用的有界非线性最小二乘 IK。
     reset_ik_max_iters: int = 80
-    reset_ik_step_scale: float = 0.6
     reset_ik_tolerance: float = 1e-4
+    reset_ik_position_tolerance: float = 1e-4
+    reset_ik_rotation_tolerance: float = 1e-3
+    # 旧 DLS 参数仅为兼容历史 override 保留；非线性最小二乘后端不使用。
+    reset_ik_step_scale: float = 0.6
     reset_ik_damping: float = 1e-4
+    reset_ik_position_weight: float = 1.0
+    reset_ik_rotation_weight: float = 0.05
+    reset_ik_seed_weight: float = 0.01
+    reset_ik_center_weight: float = 0.002
 
     # Reward weights.
     reward_xy_weight: float = 8.0
@@ -150,6 +161,8 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
         self._socket_site_id = self.model.site(self.insertion_cfg.socket_site_name).id
         self._step_count = 0
+        self._ik_data = mujoco.MjData(self.model)
+        self._last_reset_ik_q: Optional[np.ndarray] = None
         self._task_space_controller = TaskSpaceVelocityController(
             input_deadzone=self.insertion_cfg.input_deadzone,
             input_filter_alpha=self.insertion_cfg.input_filter_alpha,
@@ -213,12 +226,19 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         self._max_insertion_depth = max(
             float(self._preinsert_tip_pos[2] - self._socket_pos[2]), 1e-6
         )
+
     def reset(
         self,
         *,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict, Dict]:
+        """重置到带小扰动的预插入初始位姿。
+
+        父类 reset 先恢复 MJCF 的 home keyframe。本子类随后采样一个任务空间
+        小扰动，用有界 IK 将 ``tool_tip_site`` 放到目标位姿，最后把速度控制器
+        的内部目标同步到新的真实仿真状态。
+        """
         obs, info = super().reset(seed=seed, options=options)
         self._step_count = 0
         self._socket_pos, self._socket_rot = self._get_socket_pose()
@@ -346,6 +366,7 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         }
 
     def _sample_reset_tip_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        """围绕名义 home 末端位姿采样预插入 reset 位姿。"""
         cfg = self.insertion_cfg
         pos_noise = self.np_random.uniform(
             cfg.reset_pos_noise_low,
@@ -371,40 +392,55 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         target_tip_pos: np.ndarray,
         target_tip_rot: np.ndarray,
     ) -> None:
+        """使用有界 site 位姿 IK 将仿真机械臂移动到 reset 位姿。
+
+        该函数只在 episode 初始化时使用。运行时 action 仍然经过
+        :class:`TaskSpaceVelocityController` 及其速度级 DLS 求解，因此修改该
+        函数不会改变每一步 policy 控制逻辑。
+        """
         cfg = self.insertion_cfg
-        q = self.data.qpos[self._qpos_addrs].copy()
+        target_transform = np.eye(4, dtype=np.float64)
+        target_transform[:3, :3] = target_tip_rot
+        target_transform[:3, 3] = target_tip_pos
 
-        for _ in range(cfg.reset_ik_max_iters):
-            current_pos, current_rot = self._get_ee_pose()
-            pos_error = target_tip_pos - current_pos
-            rot_error = Rotation.from_matrix(
-                target_tip_rot @ current_rot.T
-            ).as_rotvec()
-            error = np.concatenate([pos_error, rot_error])
+        q_current = self.data.qpos[self._qpos_addrs].copy()
+        finite_limits = np.isfinite(self._q_low) & np.isfinite(self._q_high)
+        q_center = q_current.copy()
+        q_center[finite_limits] = 0.5 * (
+            self._q_low[finite_limits] + self._q_high[finite_limits]
+        )
 
-            if np.linalg.norm(error) < cfg.reset_ik_tolerance:
-                break
+        extra_seeds = [q_center]
+        if self._last_reset_ik_q is not None:
+            extra_seeds.insert(0, self._last_reset_ik_q)
 
-            jacp = np.zeros((3, self.model.nv), dtype=np.float64)
-            jacr = np.zeros((3, self.model.nv), dtype=np.float64)
-            mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)
-            jacobian = np.vstack([
-                jacp[:, self._dof_addrs],
-                jacr[:, self._dof_addrs],
-            ])
-
-            jjt = jacobian @ jacobian.T + cfg.reset_ik_damping * np.eye(6)
-            dq = jacobian.T @ np.linalg.solve(jjt, error)
-            q = np.clip(
-                q + cfg.reset_ik_step_scale * dq,
-                self._q_low,
-                self._q_high,
-            )
-
-            self.data.qpos[self._qpos_addrs] = q
-            self._sync_actuator_ctrl_to_current_state()
-            mujoco.mj_forward(self.model, self.data)
-
+        self._ik_data.qpos[:] = self.data.qpos
+        self._ik_data.qvel[:] = self.data.qvel
+        result = solve_site_pose_ik(
+            model=self.model,
+            data=self._ik_data,
+            target_transform=target_transform,
+            q_seed=q_current,
+            qpos_addrs=self._qpos_addrs,
+            dof_addrs=self._dof_addrs,
+            q_low=self._q_low,
+            q_high=self._q_high,
+            site_id=self._ee_site_id,
+            options=SiteIKOptions(
+                max_iterations=cfg.reset_ik_max_iters,
+                tolerance=cfg.reset_ik_tolerance,
+                position_tolerance=cfg.reset_ik_position_tolerance,
+                rotation_tolerance=cfg.reset_ik_rotation_tolerance,
+                position_weight=cfg.reset_ik_position_weight,
+                rotation_weight=cfg.reset_ik_rotation_weight,
+                seed_weight=cfg.reset_ik_seed_weight,
+                center_weight=cfg.reset_ik_center_weight,
+            ),
+            extra_seeds=extra_seeds,
+        )
+        self.data.qpos[self._qpos_addrs] = result.q
+        self.data.qvel[self._dof_addrs] = 0.0
+        self._last_reset_ik_q = result.q.copy()
         self._sync_actuator_ctrl_to_current_state()
         mujoco.mj_forward(self.model, self.data)
 
@@ -421,6 +457,11 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         return transform
 
     def _get_site_jacobian(self) -> np.ndarray:
+        """返回当前 tip LOCAL 坐标系下的 ``tool_tip_site`` Jacobian。
+
+        MuJoCo 给出的是世界系 site Jacobian。共享速度控制器计算的是局部位姿
+        误差，因此在求解关节速度前需要把 Jacobian 转到同一个坐标系。
+        """
         jacp = np.zeros((3, self.model.nv), dtype=np.float64)
         jacr = np.zeros((3, self.model.nv), dtype=np.float64)
         mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)

@@ -163,7 +163,12 @@ class FrankaMujocoEnv(gym.Env):
         return obs, {}
 
     def _reset_to_home_state(self) -> None:
-        """Reset to the MJCF home keyframe when available, otherwise cfg.home_qpos."""
+        """将 MuJoCo 状态和 actuator 命令同步到一致的 home 状态。
+
+        位置 actuator 在 reset 后需要接收当前 qpos；速度 actuator 则需要接收
+        零速度。写入 qpos/qvel 后必须调用 ``mj_forward``，确保读取 observation
+        前 site 位姿、sensor 和 Jacobian 都已经匹配 reset 后的构型。
+        """
         key_id = -1
         if self.cfg.home_key_name:
             key_id = mujoco.mj_name2id(
@@ -183,7 +188,11 @@ class FrankaMujocoEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
 
     def _sync_actuator_ctrl_to_current_state(self) -> None:
-        """Set actuator controls consistently for the configured actuator mode."""
+        """根据当前 actuator 模式同步控制命令。
+
+        同一个 MJCF 可以使用位置或速度 actuator。位置模式下 ctrl 表示目标关节
+        位置；速度模式下 ctrl 表示目标关节速度，因此安全的同步命令是零速度。
+        """
         if self.cfg.actuator_mode == "position":
             self.data.ctrl[self._actuator_ids] = self.data.qpos[self._qpos_addrs].copy()
             return
@@ -198,6 +207,12 @@ class FrankaMujocoEnv(gym.Env):
         )
 
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
+        """执行 base 环境的一步 Cartesian delta 控制。
+
+        插入任务环境会用共享任务空间速度控制器覆盖该方法。这里的 base 路径
+        仍适用于只需要把 Cartesian delta 直接映射为关节命令的简单 MuJoCo
+        任务。
+        """
         action = np.clip(action, -1.0, 1.0).astype(np.float64)
 
         cart_delta = np.zeros(6, dtype=np.float64)
@@ -270,7 +285,12 @@ class FrankaMujocoEnv(gym.Env):
         return pos, rot
 
     def _get_ee_velocity(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return end-effector linear and angular velocity in the world frame."""
+        """返回世界坐标系下的末端线速度和角速度。
+
+        MuJoCo 存储的是广义速度，而不是直接存储 site 速度。使用完整 site
+        Jacobian 乘以完整 qvel，即使后续模型加入非机械臂 DOF，也能保持计算
+        方式正确。
+        """
         jacp = np.zeros((3, self.model.nv), dtype=np.float64)
         jacr = np.zeros((3, self.model.nv), dtype=np.float64)
         mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self._ee_site_id)

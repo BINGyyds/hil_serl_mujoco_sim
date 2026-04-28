@@ -54,7 +54,11 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
         return expert_a, intervened
 
     def peek_intervention(self) -> Tuple[np.ndarray, bool]:
-        """Read SpaceMouse once and cache the result for the next ``step`` call."""
+        """读取一次 SpaceMouse，并将结果缓存给下一次 ``step`` 使用。
+
+        actor loop 会在采样 policy action 前先 peek。缓存可以避免同一个控制
+        周期内 peek 和紧随其后的 ``step`` 读到两次不同的人类输入。
+        """
         if self._cached_action is None or self._cached_replaced is None:
             self._cached_action, self._cached_replaced = self._read_expert_action()
         return self._cached_action.copy(), bool(self._cached_replaced)
@@ -73,6 +77,11 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
         return action, False
 
     def step(self, action):
+        """在人类介入时用 SpaceMouse 输入替换 policy action。
+
+        ``info["intervene_action"]`` 是训练 loop 的标记信号，用于把人类介入
+        transition 放入 intervention/demo buffer。
+        """
         new_action, replaced = self.action(action)
         obs, rew, done, truncated, info = self.env.step(new_action)
         if replaced:
@@ -116,6 +125,7 @@ class MujocoSERLObsWrapper(gym.ObservationWrapper):
         )
 
     def observation(self, obs):
+        """将选定 state key 展平成 state-only SERL observation。"""
         return {
             "state": flatten(
                 self.proprio_space,

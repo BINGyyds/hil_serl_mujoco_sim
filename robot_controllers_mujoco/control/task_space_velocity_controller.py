@@ -173,7 +173,12 @@ class TaskSpaceVelocityController:
         dt: float,
         wrench_world: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Compute joint velocity command from a normalized 6-D input."""
+        """根据归一化 6D 输入计算关节速度命令。
+
+        控制链路为：输入滤波、积分名义任务空间目标、可选叠加导纳虚拟目标、
+        计算 LOCAL 位姿误差，然后求解速度级阻尼最小二乘问题。这里不是环境
+        reset 时使用的非线性位姿 IK。
+        """
         if self.target_transform is None or self.posture_reference is None:
             self.reset(
                 current_transform=current_transform,
@@ -228,6 +233,11 @@ class TaskSpaceVelocityController:
         filtered_command: np.ndarray,
         dt: float,
     ) -> None:
+        """将操作者或 policy 命令积分到名义目标位姿。
+
+        当前 teleop 约定是有意混合的：平移命令按世界坐标系解释，旋转增量在
+        目标 LOCAL 坐标系下右乘，以保留 SpaceMouse 的操作手感。
+        """
         if self.target_transform is None:
             raise RuntimeError("Task-space target transform is not initialized.")
 
@@ -286,6 +296,11 @@ class TaskSpaceVelocityController:
         dt: float,
         wrench_world: np.ndarray,
     ) -> None:
+        """更新可选的导纳目标偏置。
+
+        存储的柔顺状态是相对名义目标的偏置，因此 wrench 输入消失后会衰减回
+        零，而不是永久漂移操作者或 policy 的参考目标。
+        """
         if self.target_transform is None:
             raise RuntimeError("Task-space target transform is not initialized.")
 
@@ -369,6 +384,11 @@ class TaskSpaceVelocityController:
         jacobian: np.ndarray,
         pose_error: np.ndarray,
     ) -> np.ndarray:
+        """求解速度级 DLS 任务，并叠加零空间姿态控制。
+
+        该方法输出单个控制周期的 qdot。它刻意不求解全局位姿 IK，也不会直接
+        重写关节位置。
+        """
         damping_matrix = self.ik_damping * np.eye(6, dtype=np.float64)
         jjt = jacobian @ jacobian.T
         jacobian_pinv = jacobian.T @ np.linalg.solve(
@@ -406,6 +426,7 @@ class TaskSpaceVelocityController:
         current_q: np.ndarray,
         qdot_command: np.ndarray,
     ) -> np.ndarray:
+        """阻断会让关节继续朝限位外运动的速度分量。"""
         qdot_safe = np.asarray(qdot_command, dtype=np.float64).copy()
         finite_mask = np.isfinite(self.lower_position_limits) & np.isfinite(
             self.upper_position_limits
