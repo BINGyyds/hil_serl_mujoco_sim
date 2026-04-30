@@ -14,7 +14,7 @@ warn()  { echo -e "\033[93m[WARN]\033[0m $*"; }
 error() { echo -e "\033[91m[ERROR]\033[0m $*"; exit 1; }
 
 if [[ "$(uname)" != "Linux" ]]; then
-    error "setup_env_ubuntu.sh 仅适用于 Ubuntu/Linux。"
+    error "setup_env_sim.sh 仅适用于 Ubuntu/Linux。"
 fi
 
 if ! command -v apt-get &>/dev/null; then
@@ -42,7 +42,7 @@ if [[ "$SKIP_APT" == "1" ]]; then
 else
     info "安装 Ubuntu 系统依赖"
     if ! sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update; then
-        error "apt-get update 失败。通常是系统里存在失效的第三方源。请先修复 /etc/apt/sources.list.d 下的坏源后重试；如果这些系统依赖已经装好，也可以使用 SKIP_APT=1 ./setup_env_ubuntu.sh 跳过此步骤。"
+        error "apt-get update 失败。通常是系统里存在失效的第三方源。请先修复 /etc/apt/sources.list.d 下的坏源后重试；如果这些系统依赖已经装好，也可以使用 SKIP_APT=1 ./setup_env_sim.sh 跳过此步骤。"
     fi
 
     sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y \
@@ -121,6 +121,6 @@ python -c "from robot_controllers_mujoco.spacemouse.spacemouse_expert import Spa
 echo
 info "环境已准备完成。"
 info "激活环境: conda activate $ENV_NAME"
-info "控制器入口: python scripts/debug/teleop_main.py --input-mode spacemouse --control-mode velocity --allow-missing-spacemouse"
+info "控制器入口: python scripts/debug/teleop_main.py --allow-missing-spacemouse"
 info "录制 demo: python scripts/record_demos_mujoco.py --output demo_data/insertion_demos.pkl --num_demos 25"
 warn "如果 SpaceMouse 已经插着但仍无法打开，请拔插一次设备后重试。"

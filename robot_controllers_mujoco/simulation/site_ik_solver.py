@@ -1,7 +1,7 @@
 """共享的 MuJoCo site 位姿逆运动学求解器。
 
-该模块刻意不依赖 Gym 环境或 debug 控制器，使 reset 阶段 IK 和 planned
-模式 IK 可以复用同一套带关节边界约束的非线性最小二乘后端。
+该模块刻意不依赖 Gym 环境或 debug 控制器，使 env reset、手动调试和后续
+视觉/任务扩展都能复用同一套带关节边界约束的非线性最小二乘后端。
 """
 
 from __future__ import annotations

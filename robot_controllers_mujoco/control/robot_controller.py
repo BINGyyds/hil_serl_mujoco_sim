@@ -12,24 +12,17 @@ from robot_controllers_mujoco.control.task_space_velocity_controller import (
 )
 from robot_controllers_mujoco.control.teleop_runtime import TeleopRuntime
 from robot_controllers_mujoco.simulation.mujoco_interface import MujocoInterface
-from robot_controllers_mujoco.simulation.robot_model import RobotModel
-from robot_controllers_mujoco.simulation.robot_motion import RobotMotion
 
 logger = logging.getLogger(__name__)
 
 
 class RobotController:
-    """协调 MuJoCo、Pinocchio 与输入设备的高层控制器。"""
+    """Franka insertion 的本地 SpaceMouse + velocity teleop 控制器。"""
 
     def __init__(self, config: ProjectConfig) -> None:
         logger.info("正在初始化机器人控制器...")
         self.config = config
         self.mujoco_interface = MujocoInterface(config)
-        self.robot_model = RobotModel(
-            mjcf_path=config.model.mjcf_path,
-            end_effector_frame_name=config.model.end_effector_site_name,
-        )
-        self.robot_motion = RobotMotion()
         self.data_manager = DataManager()
 
         self.spacemouse: Optional[Any] = None
@@ -48,8 +41,6 @@ class RobotController:
         self.next_camera_frame_sim_time = 0.0
         self.next_log_time = 0.0
 
-        self.effort_kp = np.diag(config.effort_control.kp_gains)
-        self.effort_kd = np.diag(config.effort_control.kd_gains)
         self.task_space_controller = TaskSpaceVelocityController(
             input_deadzone=config.teleop.spacemouse_deadzone,
             input_filter_alpha=config.teleop.spacemouse_filter_alpha,
@@ -63,8 +54,8 @@ class RobotController:
                 dtype=np.float64,
             ),
             joint_limit_margin=config.teleop.joint_limit_margin,
-            lower_position_limits=self.robot_model.lower_position_limits,
-            upper_position_limits=self.robot_model.upper_position_limits,
+            lower_position_limits=self.mujoco_interface.arm_joint_lower_limits,
+            upper_position_limits=self.mujoco_interface.arm_joint_upper_limits,
             enable_admittance=config.teleop.enable_admittance,
             wrench_filter_alpha=config.teleop.wrench_filter_alpha,
             force_deadband=np.asarray(config.teleop.force_deadband, dtype=np.float64),
@@ -72,7 +63,10 @@ class RobotController:
             max_force_world=np.asarray(config.teleop.max_force_world, dtype=np.float64),
             max_torque_world=np.asarray(config.teleop.max_torque_world, dtype=np.float64),
             admittance_mass=np.asarray(config.teleop.admittance_mass, dtype=np.float64),
-            admittance_damping=np.asarray(config.teleop.admittance_damping, dtype=np.float64),
+            admittance_damping=np.asarray(
+                config.teleop.admittance_damping,
+                dtype=np.float64,
+            ),
             admittance_stiffness=np.asarray(
                 config.teleop.admittance_stiffness,
                 dtype=np.float64,
@@ -105,7 +99,7 @@ class RobotController:
             while True:
                 current_sim_time = self.mujoco_interface.data.time
                 self._handle_data_logging(current_sim_time)
-                self._execute_simulation_step(current_sim_time)
+                self._execute_simulation_step()
 
                 updated_sim_time = self.mujoco_interface.data.time
                 self._handle_rendering(updated_sim_time)
@@ -132,12 +126,7 @@ class RobotController:
         self._reset_loop_timing()
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
 
-        if self.config.mode.input_mode == "planned":
-            self._initialize_planned_mode()
-        elif self.config.mode.input_mode == "spacemouse":
-            self._initialize_spacemouse_mode()
-        else:
-            raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
+        self._initialize_spacemouse_mode()
 
         frame_size = None
         main_video_path = self.config.paths.main_video_path
@@ -169,31 +158,6 @@ class RobotController:
 
         if self.config.visualization.use_viewer:
             self.mujoco_interface.launch_viewer()
-
-    def _initialize_planned_mode(self) -> None:
-        """初始化离线规划模式。"""
-        self.ee_tf_home = self.mujoco_interface.get_end_effector_transform()
-        self.ee_tf_final = self.ee_tf_home.copy()
-        self.ee_tf_final[2, 3] = 0.052
-        # socket_tf = self.mujoco_interface.get_site_transform("tool_socket_center_site")
-        # self.ee_tf_final[:3, 3] = socket_tf[:3, 3]
-
-        self.q_final = self.mujoco_interface.inverse_kinematics_site(
-            self.ee_tf_final,
-            q_init=self.q_home,
-        )
-
-        duration = self.config.sim.simulation_duration
-        timestep = self.config.sim.timestep
-        self.q_traj, self.qd_traj, self.qdd_traj = self.robot_motion.motion_plan_cartesian(
-            robot_model=self.robot_model,
-            tf=duration,
-            start_transform=self.ee_tf_home,
-            target_transform=self.ee_tf_final,
-            q_init=self.q_home,
-            num_samples=int(duration / timestep) + 1,
-            ik_solver=self.mujoco_interface.inverse_kinematics_site,
-        )
 
     def _initialize_spacemouse_mode(self) -> None:
         """初始化 SpaceMouse teleop 模式。"""
@@ -244,8 +208,6 @@ class RobotController:
         if robot_data_path:
             self.data_manager.save_data(robot_path=robot_data_path)
 
-        # self.data_manager.plot_data()
-
     def _handle_data_logging(self, current_sim_time: float) -> None:
         """在仿真循环中处理数据采样与日志输出。"""
         if current_sim_time >= self.next_log_time:
@@ -254,41 +216,28 @@ class RobotController:
             ee_pos = self.mujoco_interface.get_end_effector_position()
 
             if current_sim_time % 0.5 < self.config.sim.timestep:
-                if self.config.mode.input_mode == "planned":
-                    error_pos = self.ee_tf_final[:3, 3] - ee_pos
-                elif self.config.mode.input_mode == "spacemouse":
-                    error_pos = None
-                else:
-                    raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
-                self.print_robot_info(current_sim_time, ee_pos, current_q, error_pos)
+                self.print_robot_info(current_sim_time, ee_pos, current_q)
 
             self.data_manager.record_data(self.next_log_time, current_q, torques, ee_pos)
             self.next_log_time += self.config.logging.data_logging_interval
 
-    def _execute_simulation_step(self, current_sim_time: float) -> None:
-        """执行单步控制与物理仿真。"""
-        current_q, current_v = self._get_current_joint_state()
-
-        if self.config.mode.input_mode == "planned":
-            target_q, target_v, target_a = self.robot_motion.evaluate_joint_trajectory(
-                current_sim_time
-            )
-            self._apply_control(current_q, current_v, target_q, target_v, target_a)
-        elif self.config.mode.input_mode == "spacemouse":
-            self._execute_spacemouse_teleop_step()
+    def _execute_simulation_step(self) -> None:
+        """读取 SpaceMouse 输入并通过共享 runtime 完成一次控制和仿真步进。"""
+        raw_spacemouse_action, buttons = self._read_spacemouse_input()
+        if self._handle_spacemouse_reset_request(buttons):
+            self._send_joint_velocity_command_to_mujoco(np.zeros_like(self.q_home))
+            self.mujoco_interface.step()
             return
-        else:
-            raise ValueError(f"不支持的输入模式: {self.config.mode.input_mode}")
 
-        self.mujoco_interface.step()
+        if self.teleop_runtime is None:
+            raise RuntimeError("Teleop runtime 尚未初始化。")
+        self.teleop_runtime.step(
+            raw_spacemouse_action,
+            dt=self.config.sim.timestep,
+        )
 
     def _handle_rendering(self, current_sim_time: float) -> None:
         """在仿真循环中处理 viewer 同步。"""
-        # if self.video_writers and current_sim_time >= self.next_frame_sim_time:
-        #     main_frame = self.mujoco_interface.render_frame(camera=self.mujoco_interface.camera)
-        #     self.video_writers[0].add_frame(main_frame)
-        #     while current_sim_time >= self.next_frame_sim_time:
-        #         self.next_frame_sim_time += self.video_frame_duration
         self._handle_teleop_camera_window(current_sim_time)
         if self.config.visualization.use_viewer:
             self.mujoco_interface.sync_viewer()
@@ -307,7 +256,7 @@ class RobotController:
         if missing_camera_names:
             raise ValueError(
                 "当前 MuJoCo 模型缺少实时显示所需相机: "
-                f"{missing_camera_names}。请确认使用 control_mode='velocity'。"
+                f"{missing_camera_names}。请确认使用 velocity 主线模型。"
             )
 
         try:
@@ -424,7 +373,6 @@ class RobotController:
         current_time: float,
         ee_pos: np.ndarray,
         current_q: np.ndarray,
-        error_pos: Optional[np.ndarray],
     ) -> None:
         """打印机器人和仿真器的关键信息。"""
         logger.info("=" * 60)
@@ -432,62 +380,7 @@ class RobotController:
         logger.info("仿真时间:%s", current_time)
         logger.info("末端位置:%s", ee_pos)
         logger.info("关节角度: %s", current_q)
-        logger.info("末端位置跟踪误差: %s", error_pos)
         logger.info("=" * 60)
-
-    def _apply_control(
-        self,
-        current_q: np.ndarray,
-        current_v: np.ndarray,
-        target_q: np.ndarray,
-        target_v: np.ndarray,
-        target_a: np.ndarray,
-    ) -> None:
-        """根据 planned 模式下的目标轨迹向 MuJoCo 下发控制指令。"""
-        if self.config.mode.control_mode == "position":
-            control_signal = target_q
-        elif self.config.mode.control_mode == "effort":
-            tau_ff = self.robot_model.inverse_dynamics(current_q, current_v, target_a)
-            q_error = target_q - current_q
-            v_error = target_v - current_v
-            tau_fb = self.effort_kp @ q_error + self.effort_kd @ v_error
-            control_signal = tau_ff + tau_fb
-        else:
-            raise ValueError(f"不支持的控制模式: {self.config.mode.control_mode}")
-
-        self.mujoco_interface.set_control(control_signal)
-
-    def _run_spacemouse_teleop_step(
-        self,
-        current_q: np.ndarray,
-        current_v: np.ndarray,
-    ) -> np.ndarray:
-        """执行一次 SpaceMouse teleop 控制计算。"""
-        raw_spacemouse_action, buttons = self._read_spacemouse_input()
-        if self._handle_spacemouse_reset_request(buttons):
-            return np.zeros_like(current_q)
-
-        if self.teleop_runtime is None:
-            raise RuntimeError("Teleop runtime 尚未初始化。")
-        return self.teleop_runtime.compute_joint_velocity(
-            raw_spacemouse_action,
-            dt=self.config.sim.timestep,
-        )
-
-    def _execute_spacemouse_teleop_step(self) -> None:
-        """读取 SpaceMouse 输入并通过共享 runtime 完成一次控制和仿真步进。"""
-        raw_spacemouse_action, buttons = self._read_spacemouse_input()
-        if self._handle_spacemouse_reset_request(buttons):
-            self._send_joint_velocity_command_to_mujoco(np.zeros_like(self.q_home))
-            self.mujoco_interface.step()
-            return
-
-        if self.teleop_runtime is None:
-            raise RuntimeError("Teleop runtime 尚未初始化。")
-        self.teleop_runtime.step(
-            raw_spacemouse_action,
-            dt=self.config.sim.timestep,
-        )
 
     def _read_spacemouse_input(self) -> Tuple[np.ndarray, list]:
         """读取最新的 SpaceMouse 6D 输入和按钮状态。"""
@@ -511,13 +404,9 @@ class RobotController:
         self.reset_button_pressed = reset_pressed
         return False
 
-    def _get_current_joint_state(self) -> Tuple[np.ndarray, np.ndarray]:
-        """读取当前关节角度和关节角速度。"""
-        return self.mujoco_interface.get_arm_joint_state()
-
     def _get_teleop_control_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """返回共享 teleop runtime 所需的 q、MuJoCo 末端位姿和 LOCAL Jacobian。"""
-        current_q, _ = self._get_current_joint_state()
+        current_q = self.mujoco_interface.get_arm_joint_angles()
         current_transform = self.mujoco_interface.get_end_effector_transform()
         jacobian = self.mujoco_interface.get_end_effector_local_jacobian()
         return current_q, current_transform, jacobian

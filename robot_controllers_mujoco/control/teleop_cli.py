@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Run the manual MuJoCo control/debug entrypoint."""
-    parser = argparse.ArgumentParser(description="机器人控制与仿真框架")
+    parser = argparse.ArgumentParser(
+        description="Franka insertion 的 SpaceMouse + velocity teleop 调试入口"
+    )
     parser.add_argument(
         "--no_viewer",
         action="store_true",
@@ -23,15 +25,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--input-mode",
-        choices=("planned", "spacemouse"),
+        choices=("spacemouse",),
         default=None,
-        help="输入模式：planned 使用内置轨迹规划，spacemouse 使用 6D SpaceMouse 实时控制。",
+        help="当前仅保留 SpaceMouse 实时控制路径。",
     )
     parser.add_argument(
         "--control-mode",
-        choices=("position", "effort", "velocity"),
+        choices=("velocity",),
         default=None,
-        help="底层控制模式。",
+        help="当前仅保留 velocity 控制模式。",
     )
     parser.add_argument(
         "--allow-missing-spacemouse",

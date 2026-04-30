@@ -7,8 +7,8 @@ from typing import Optional, Tuple
 class ModeConfig:
     """运行模式配置。"""
 
-    input_mode: str = "planned"             # 输入模式：planned,spacemouse
-    control_mode: str = "effort"            # 控制模式：position,effort,velocity
+    input_mode: str = "spacemouse"
+    control_mode: str = "velocity"
     allow_missing_spacemouse: bool = False
 
 
@@ -132,30 +132,6 @@ class TeleopConfig:
 
 
 @dataclass
-class EffortControlConfig:
-    """effort 模式下的关节空间 PD 增益。"""
-
-    kp_gains: Tuple[float, ...] = (
-        100.0,
-        200.0,
-        100.0,
-        200.0,
-        200.0,
-        100.0,
-        100.0,
-    )
-    kd_gains: Tuple[float, ...] = (
-        10.0,
-        10.0,
-        10.0,
-        10.0,
-        10.0,
-        10.0,
-        10.0,
-    )
-
-
-@dataclass
 class PathsConfig:
     """工程路径与输出文件路径配置。"""
 
@@ -180,7 +156,7 @@ class PathsConfig:
 
 @dataclass
 class ProjectConfig:
-    """集中管理 Panda 仿真与后续真机迁移所需的配置。"""
+    """集中管理当前 MuJoCo teleop/debug 主线所需的配置。"""
 
     mode: ModeConfig = field(default_factory=ModeConfig)
     sim: SimulationConfig = field(default_factory=SimulationConfig)
@@ -188,7 +164,6 @@ class ProjectConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     teleop: TeleopConfig = field(default_factory=TeleopConfig)
-    effort_control: EffortControlConfig = field(default_factory=EffortControlConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
 
     def __post_init__(self) -> None:
@@ -229,39 +204,22 @@ class ProjectConfig:
         return config
 
     def refresh(self) -> None:
-        """刷新派生字段并校验配置组合是否合法。"""
+        """刷新派生字段并校验当前唯一支持的运行组合。"""
         self.paths.refresh()
         franka_mjcf_root = self.paths.model_root / "franka_panda"
 
-        if self.mode.input_mode not in {"planned", "spacemouse"}:
-            raise ValueError("input_mode 仅支持 'planned' 或 'spacemouse'。")
-
-        if self.mode.control_mode == "position":
-            self.model.mjcf_path = franka_mjcf_root / "panda_nohand_position.xml"
-            self.model.end_effector_force_sensor_name = None
-            self.model.end_effector_torque_sensor_name = None
-            self.sim.enable_gravity_compensation = False
-        elif self.mode.control_mode == "effort":
-            self.model.mjcf_path = franka_mjcf_root / "panda_nohand_effort.xml"
-            self.model.end_effector_force_sensor_name = None
-            self.model.end_effector_torque_sensor_name = None
-            self.sim.enable_gravity_compensation = False
-        elif self.mode.control_mode == "velocity":
-            self.model.mjcf_path = franka_mjcf_root / "panda_nohand_velocity.xml"
-            self.model.end_effector_force_sensor_name = "tool_tip_force_sensor"
-            self.model.end_effector_torque_sensor_name = "tool_tip_torque_sensor"
-            self.sim.enable_gravity_compensation = True
-        else:
+        if self.mode.input_mode != "spacemouse":
+            raise ValueError("当前 debug/teleop 主线仅支持 input_mode='spacemouse'。")
+        if self.mode.control_mode != "velocity":
             raise ValueError(
-                "control_mode 仅支持 'position'、'effort' 或 'velocity'。"
+                "当前 debug/teleop 主线仅支持 control_mode='velocity'。"
             )
 
-        if self.mode.input_mode == "spacemouse" and self.mode.control_mode != "velocity":
-            raise ValueError("SpaceMouse teleop 仅支持 control_mode='velocity'。")
-        if self.mode.input_mode == "planned" and self.mode.control_mode == "velocity":
-            raise ValueError(
-                "planned 模式当前仅支持 control_mode='position' 或 'effort'。"
-            )
+        self.model.mjcf_path = franka_mjcf_root / "panda_nohand_velocity.xml"
+        self.model.end_effector_force_sensor_name = "tool_tip_force_sensor"
+        self.model.end_effector_torque_sensor_name = "tool_tip_torque_sensor"
+        self.sim.enable_gravity_compensation = True
+
         if self.sim.real_time_factor <= 0.0:
             raise ValueError("real_time_factor 必须大于 0。")
         if self.visualization.teleop_camera_fps <= 0:
