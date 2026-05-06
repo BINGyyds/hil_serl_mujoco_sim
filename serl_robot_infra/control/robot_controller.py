@@ -4,14 +4,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from robot_controllers_mujoco.common.async_writer import AsyncVideoWriter
-from robot_controllers_mujoco.common.config import ProjectConfig
-from robot_controllers_mujoco.common.data_manager import DataManager
-from robot_controllers_mujoco.control.task_space_velocity_controller import (
+from serl_robot_infra.common.async_writer import AsyncVideoWriter
+from serl_robot_infra.common.config import ProjectConfig
+from serl_robot_infra.common.data_manager import DataManager
+from serl_robot_infra.control.task_space_velocity_controller import (
     TaskSpaceVelocityController,
 )
-from robot_controllers_mujoco.control.teleop_runtime import TeleopRuntime
-from robot_controllers_mujoco.simulation.mujoco_interface import MujocoInterface
+from serl_robot_infra.control.teleop_runtime import TeleopRuntime
+from serl_robot_infra.simulation.mujoco_interface import MujocoInterface
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ class RobotController:
 
     def _initialize_spacemouse_mode(self) -> None:
         """初始化 SpaceMouse teleop 模式。"""
-        from robot_controllers_mujoco.spacemouse.spacemouse_expert import (
+        from serl_robot_infra.spacemouse.spacemouse_expert import (
             SpaceMouseExpert,
             ZeroSpaceMouseExpert,
         )

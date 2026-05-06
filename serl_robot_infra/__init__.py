@@ -17,7 +17,7 @@ def __getattr__(name: str):
         "InsertionConfig",
         "make_insertion_config",
     }:
-        module = import_module("robot_controllers_mujoco.configs")
+        module = import_module("serl_robot_infra.configs")
         return getattr(module, name)
     if name in {
         "FrankaMujocoEnv",
@@ -25,7 +25,7 @@ def __getattr__(name: str):
         "MujocoSERLObsWrapper",
         "MujocoSpacemouseIntervention",
     }:
-        module = import_module("robot_controllers_mujoco.envs")
+        module = import_module("serl_robot_infra.envs")
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

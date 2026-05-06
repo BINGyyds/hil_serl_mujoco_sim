@@ -17,15 +17,15 @@ import numpy as np
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
-from robot_controllers_mujoco.control.task_space_velocity_controller import (
+from serl_robot_infra.control.task_space_velocity_controller import (
     TaskSpaceVelocityController,
 )
-from robot_controllers_mujoco.control.teleop_runtime import TeleopRuntime
-from robot_controllers_mujoco.envs.franka_mujoco_env import (
+from serl_robot_infra.control.teleop_runtime import TeleopRuntime
+from serl_robot_infra.envs.franka_mujoco_env import (
     FrankaMujocoConfig,
     FrankaMujocoEnv,
 )
-from robot_controllers_mujoco.simulation.site_ik_solver import (
+from serl_robot_infra.simulation.site_ik_solver import (
     SiteIKOptions,
     solve_site_pose_ik,
 )

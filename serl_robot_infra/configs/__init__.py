@@ -1,4 +1,4 @@
-from robot_controllers_mujoco.configs.insertion_config import (
+from serl_robot_infra.configs.insertion_config import (
     InsertionConfig,
     make_insertion_config,
 )

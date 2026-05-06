@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from robot_controllers_mujoco.envs.franka_insertion_env import InsertionConfig
+from serl_robot_infra.envs.franka_insertion_env import InsertionConfig
 
 _MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "franka_panda"
 

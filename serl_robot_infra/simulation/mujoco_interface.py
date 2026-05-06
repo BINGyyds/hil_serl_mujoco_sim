@@ -6,8 +6,8 @@ import mujoco.viewer
 import numpy as np
 from mujoco import MjvCamera
 
-from robot_controllers_mujoco.common.config import ProjectConfig
-from robot_controllers_mujoco.simulation.site_ik_solver import (
+from serl_robot_infra.common.config import ProjectConfig
+from serl_robot_infra.simulation.site_ik_solver import (
     SiteIKOptions,
     solve_site_pose_ik,
 )
@@ -344,7 +344,7 @@ class MujocoInterface:
 
         ``damping``、``step_scale`` 和 ``max_step_norm`` 是旧 DLS 接口参数，
         这里保留签名以兼容轨迹规划调用，但主求解逻辑由
-        :mod:`robot_controllers_mujoco.simulation.site_ik_solver` 负责。
+        :mod:`serl_robot_infra.simulation.site_ik_solver` 负责。
         """
         site_id = self._get_site_id(site_name)
         finite_limits = np.isfinite(self.arm_joint_lower_limits) & np.isfinite(

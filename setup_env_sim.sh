@@ -89,8 +89,8 @@ python -m pip install -e "$PROJECT_DIR"
 
 info "验证 insertion Gym 环境"
 python -c "
-from robot_controllers_mujoco.configs.insertion_config import make_insertion_config
-from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv
+from serl_robot_infra.configs.insertion_config import make_insertion_config
+from serl_robot_infra.envs.franka_insertion_env import FrankaInsertionEnv
 env = FrankaInsertionEnv(config=make_insertion_config())
 obs, _ = env.reset()
 print('obs keys:', list(obs['state'].keys()))
@@ -115,7 +115,7 @@ print('pinocchio:', pin.__version__)
 " || warn "核心依赖导入失败；请检查 pip/conda 安装日志。"
 
 info "验证 SpaceMouse 模块导入"
-python -c "from robot_controllers_mujoco.spacemouse.spacemouse_expert import SpaceMouseExpert; print('SpaceMouse import ok')" \
+python -c "from serl_robot_infra.spacemouse.spacemouse_expert import SpaceMouseExpert; print('SpaceMouse import ok')" \
     || warn "SpaceMouse 模块导入失败；如果你不使用 SpaceMouse，可暂时忽略。"
 
 echo

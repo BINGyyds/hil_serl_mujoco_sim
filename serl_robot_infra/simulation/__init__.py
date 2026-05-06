@@ -8,11 +8,11 @@ __all__ = [
 
 def __getattr__(name):
     if name == "MujocoInterface":
-        from robot_controllers_mujoco.simulation.mujoco_interface import MujocoInterface
+        from serl_robot_infra.simulation.mujoco_interface import MujocoInterface
 
         return MujocoInterface
     if name in {"SiteIKOptions", "SiteIKResult", "solve_site_pose_ik"}:
-        from robot_controllers_mujoco.simulation import site_ik_solver
+        from serl_robot_infra.simulation import site_ik_solver
 
         return getattr(site_ik_solver, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

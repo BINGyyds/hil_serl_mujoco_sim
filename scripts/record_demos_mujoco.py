@@ -24,11 +24,11 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from robot_controllers_mujoco.common.config import VisualizationConfig
-from robot_controllers_mujoco.configs.insertion_config import make_insertion_config
-from robot_controllers_mujoco.envs.franka_insertion_env import FrankaInsertionEnv
-from robot_controllers_mujoco.envs.wrappers import MujocoSERLObsWrapper
-from robot_controllers_mujoco.spacemouse.spacemouse_expert import SpaceMouseExpert
+from serl_robot_infra.common.config import VisualizationConfig
+from serl_robot_infra.configs.insertion_config import make_insertion_config
+from serl_robot_infra.envs.franka_insertion_env import FrankaInsertionEnv
+from serl_robot_infra.envs.wrappers import MujocoSERLObsWrapper
+from serl_robot_infra.spacemouse.spacemouse_expert import SpaceMouseExpert
 
 
 def make_expert():

@@ -33,7 +33,7 @@ class MujocoSpacemouseIntervention(gym.ActionWrapper):
         assert env.action_space.shape == (6,), (
             f"Expected 6-D action space, got {env.action_space.shape}"
         )
-        from robot_controllers_mujoco.spacemouse.spacemouse_expert import (
+        from serl_robot_infra.spacemouse.spacemouse_expert import (
             SpaceMouseExpert,
         )
 

@@ -1,8 +1,8 @@
 import argparse
 import logging
 
-from robot_controllers_mujoco.common.config import ProjectConfig
-from robot_controllers_mujoco.control.robot_controller import RobotController
+from serl_robot_infra.common.config import ProjectConfig
+from serl_robot_infra.control.robot_controller import RobotController
 
 
 logging.basicConfig(

@@ -1,4 +1,4 @@
-# robot_controllers_mujoco
+# serl_robot_infra
 
 `sim/` 负责 MuJoCo 仿真、SpaceMouse 调试、demo 录制，以及相机渲染相关能力。
 

@@ -25,10 +25,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["robot_controllers_mujoco*"]
+include = ["serl_robot_infra*"]
 
 [tool.setuptools.package-data]
-robot_controllers_mujoco = [
+serl_robot_infra = [
   "models/franka_panda/*",
   "models/franka_panda/assets/*",
 ]

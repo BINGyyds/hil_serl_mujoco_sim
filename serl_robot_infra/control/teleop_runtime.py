@@ -5,7 +5,7 @@ from typing import Callable, Optional, Tuple
 
 import numpy as np
 
-from robot_controllers_mujoco.control.task_space_velocity_controller import (
+from serl_robot_infra.control.task_space_velocity_controller import (
     TaskSpaceVelocityController,
 )
 
