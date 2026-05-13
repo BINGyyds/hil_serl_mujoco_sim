@@ -1,7 +1,11 @@
-__all__ = ["AsyncVideoWriter", "DataManager", "ProjectConfig"]
+__all__ = ["AsyncCameraWindow", "AsyncVideoWriter", "DataManager", "ProjectConfig"]
 
 
 def __getattr__(name):
+    if name == "AsyncCameraWindow":
+        from serl_robot_infra.common.async_camera_window import AsyncCameraWindow
+
+        return AsyncCameraWindow
     if name == "AsyncVideoWriter":
         from serl_robot_infra.common.async_writer import AsyncVideoWriter
 

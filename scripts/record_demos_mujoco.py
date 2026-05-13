@@ -16,14 +16,14 @@ import pickle as pkl
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
-import mujoco
 import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from serl_robot_infra.common.async_camera_window import AsyncCameraWindow
 from serl_robot_infra.common.config import VisualizationConfig
 from serl_robot_infra.configs.insertion_config import make_insertion_config
 from serl_robot_infra.envs.franka_insertion_env import FrankaInsertionEnv
@@ -40,95 +40,6 @@ def maybe_render(env, render_enabled: bool) -> None:
     """Render one frame only when explicitly enabled."""
     if render_enabled:
         env.render()
-
-
-class DemoCameraWindow:
-    """Small OpenCV helper for optional teleop camera display during recording."""
-
-    def __init__(
-        self,
-        env: FrankaInsertionEnv,
-        *,
-        camera_names: Sequence[str],
-        width: int,
-        height: int,
-        fps: int,
-        window_name: str,
-    ) -> None:
-        if fps <= 0:
-            raise ValueError("camera fps must be positive.")
-        self.env = env
-        self.camera_names = tuple(camera_names)
-        self.width = width
-        self.height = height
-        self.frame_interval = 1.0 / fps
-        self.window_name = window_name
-        self.next_frame_time = 0.0
-        self.window_open = True
-        self.renderer: Optional[mujoco.Renderer] = mujoco.Renderer(env.model, height, width)
-
-        try:
-            import cv2
-        except ImportError as exc:
-            raise RuntimeError("未安装 OpenCV(cv2)，无法打开相机窗口。") from exc
-        self.cv2 = cv2
-
-        missing = [
-            name
-            for name in self.camera_names
-            if mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_CAMERA, name) < 0
-        ]
-        if missing:
-            raise ValueError(f"MuJoCo 模型缺少相机: {missing}")
-
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, width * len(self.camera_names), height)
-
-    def render(self) -> None:
-        if (
-            not self.window_open
-            or self.renderer is None
-            or self.env.data.time < self.next_frame_time
-        ):
-            return
-
-        frames = []
-        for camera_name in self.camera_names:
-            self.renderer.update_scene(self.env.data, camera=camera_name)
-            frame = self.renderer.render()
-            bgr = self.cv2.cvtColor(frame, self.cv2.COLOR_RGB2BGR)
-            self.cv2.putText(
-                bgr,
-                camera_name,
-                (8, 22),
-                self.cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 255),
-                1,
-                self.cv2.LINE_AA,
-            )
-            frames.append(bgr)
-
-        if frames:
-            self.cv2.imshow(self.window_name, np.hstack(frames))
-            key = self.cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                self.close()
-
-        self.next_frame_time += self.frame_interval
-        while self.next_frame_time <= self.env.data.time:
-            self.next_frame_time += self.frame_interval
-
-    def reset_timing(self) -> None:
-        self.next_frame_time = self.env.data.time
-
-    def close(self) -> None:
-        if self.window_open:
-            self.cv2.destroyWindow(self.window_name)
-            self.window_open = False
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
 
 
 def main() -> None:
@@ -257,11 +168,12 @@ def main() -> None:
     )
     env = MujocoSERLObsWrapper(raw_env, proprio_keys=proprio_keys)
     expert = make_expert()
-    camera_window: Optional[DemoCameraWindow] = None
+    camera_window: Optional[AsyncCameraWindow] = None
     if args.show_cameras:
         camera_config = VisualizationConfig()
-        camera_window = DemoCameraWindow(
-            raw_env,
+        camera_window = AsyncCameraWindow(
+            model=raw_env.model,
+            data=raw_env.data,
             camera_names=camera_config.teleop_camera_names,
             width=args.camera_width,
             height=args.camera_height,
