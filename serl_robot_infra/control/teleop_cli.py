@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     """Run the manual MuJoCo control/debug entrypoint."""
     parser = argparse.ArgumentParser(
-        description="Franka insertion 的 SpaceMouse + velocity teleop 调试入口"
+        description="Franka insertion 的 SpaceMouse + torque teleop 调试入口"
     )
     parser.add_argument(
         "--no_viewer",
@@ -31,9 +31,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--control-mode",
-        choices=("velocity",),
+        choices=("torque",),
         default=None,
-        help="当前仅保留 velocity 控制模式。",
+        help="当前仅保留 torque 控制模式。",
     )
     parser.add_argument(
         "--allow-missing-spacemouse",
@@ -66,6 +66,7 @@ def main() -> None:
 
     args = parser.parse_args()
     logger.info("--- 启动机器人控制项目 ---")
+    logger.info("SpaceMouse 按钮: 左键=reset home, 右键=re-anchor 当前 teleop 目标")
 
     try:
         config = ProjectConfig.from_overrides(

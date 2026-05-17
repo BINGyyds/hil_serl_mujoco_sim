@@ -8,7 +8,7 @@ class ModeConfig:
     """运行模式配置。"""
 
     input_mode: str = "spacemouse"
-    control_mode: str = "velocity"
+    control_mode: str = "torque"
     allow_missing_spacemouse: bool = False
 
 
@@ -18,6 +18,7 @@ class SimulationConfig:
 
     simulation_duration: float = 10.0
     timestep: float = 0.001
+    debug_control_dt: float = 0.01
     enable_gravity_compensation: bool = False
     sync_to_real_time: bool = True
     real_time_factor: float = 1.0
@@ -65,12 +66,14 @@ class ModelConfig:
     )
     base_site_name: str = "panda_base_site"
     end_effector_site_name: str = "tool_tip_site"
+    control_frame_site_name: str = "tool_mount"
     end_effector_pos_sensor_name: Optional[str] = None
     end_effector_force_sensor_name: Optional[str] = None
     end_effector_torque_sensor_name: Optional[str] = None
     attachment_pos_sensor_name: str = "attachment_body_pos_sensor"
     attachment_quat_sensor_name: str = "attachment_body_quat_sensor"
     mjcf_path: Optional[Path] = None
+    nominal_mjcf_path: Optional[Path] = None
 
 
 @dataclass
@@ -81,9 +84,9 @@ class TeleopConfig:
     spacemouse_filter_alpha: float = 0.25
     max_reference_linear_velocity: float = 0.05
     max_reference_angular_velocity: float = 0.1
-    pose_error_gain: float = 25.0
+    max_reference_linear_offset: float = 0.01
+    max_reference_angular_offset: float = 0.2
     ik_damping: float = 1e-4
-    nullspace_gain: float = 0.15
     joint_velocity_limits: Tuple[float, ...] = (
         2.175,
         2.175,
@@ -94,41 +97,28 @@ class TeleopConfig:
         2.610,
     )
     joint_limit_margin: float = 0.05
-    enable_admittance: bool = False
-    wrench_filter_alpha: float = 0.2
-    force_deadband: Tuple[float, float, float] = (1.0, 1.0, 1.0)
-    torque_deadband: Tuple[float, float, float] = (0.05, 0.05, 0.05)
-    max_force_world: Tuple[float, float, float] = (20.0, 20.0, 20.0)
-    max_torque_world: Tuple[float, float, float] = (2.0, 2.0, 2.0)
-    admittance_mass: Tuple[float, ...] = (
-        2.0,
-        2.0,
-        3.0,
-        0.15,
-        0.15,
-        0.15,
-    )
-    admittance_damping: Tuple[float, ...] = (
-        80.0,
-        80.0,
-        110.0,
-        8.0,
-        8.0,
-        8.0,
-    )
-    admittance_stiffness: Tuple[float, ...] = (
-        80.0,
-        80.0,
-        140.0,
+    control_frame_name: str = "attachment"
+    use_external_wrench_feedback: bool = False
+    enable_nric: bool = True
+    impedance_inertia: Tuple[float, ...] = (1.0, 1.0, 1.0, 0.1, 0.1, 0.1)
+    impedance_stiffness: Tuple[float, ...] = (100.0, 100.0, 100.0, 10.0, 10.0, 10.0)
+    impedance_damping: Tuple[float, ...] = (
         10.0,
         10.0,
         10.0,
+        1.0,
+        1.0,
+        1.0,
     )
-    max_compliance_linear_offset: float = 0.02
-    max_compliance_angular_offset: float = 0.2
-    max_compliance_linear_velocity: float = 0.10
-    max_compliance_angular_velocity: float = 0.5
-    joint_velocity_filter_alpha: float = 1.0
+    nullspace_stiffness: float = 10.0
+    nullspace_damping: float = 2.0
+    nric_k_gamma: Tuple[float, ...] = (2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0)
+    nric_k_p: Tuple[float, ...] = (5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0)
+    nric_k_i: Tuple[float, ...] = (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+    nric_integral_limit: float = 0.2
+    nric_integral_deadband: float = 5e-3
+    nric_integral_leak_rate: float = 0.2
+    nric_zero_cross_reset_ratio: float = 0.2
 
 
 @dataclass
@@ -210,18 +200,29 @@ class ProjectConfig:
 
         if self.mode.input_mode != "spacemouse":
             raise ValueError("当前 debug/teleop 主线仅支持 input_mode='spacemouse'。")
-        if self.mode.control_mode != "velocity":
+        if self.mode.control_mode != "torque":
             raise ValueError(
-                "当前 debug/teleop 主线仅支持 control_mode='velocity'。"
+                "当前 debug/teleop 主线仅支持 control_mode='torque'。"
             )
 
-        self.model.mjcf_path = franka_mjcf_root / "panda_nohand_velocity.xml"
-        self.model.end_effector_force_sensor_name = "tool_tip_force_sensor"
-        self.model.end_effector_torque_sensor_name = "tool_tip_torque_sensor"
-        self.sim.enable_gravity_compensation = True
+        self.model.mjcf_path = franka_mjcf_root / "panda_nohand_effort.xml"
+        self.model.nominal_mjcf_path = franka_mjcf_root / "panda_nohand.xml"
+        self.model.end_effector_force_sensor_name = "attachment_site_force_sensor"
+        self.model.end_effector_torque_sensor_name = "attachment_site_torque_sensor"
+        self.sim.enable_gravity_compensation = False
 
         if self.sim.real_time_factor <= 0.0:
             raise ValueError("real_time_factor 必须大于 0。")
+        if self.sim.debug_control_dt <= 0.0:
+            raise ValueError("debug_control_dt 必须大于 0。")
+        if self.sim.debug_control_dt < self.sim.timestep:
+            raise ValueError("debug_control_dt 不能小于仿真 timestep。")
+        control_ratio = self.sim.debug_control_dt / self.sim.timestep
+        if not abs(control_ratio - round(control_ratio)) < 1e-9:
+            raise ValueError(
+                "debug_control_dt 必须是 timestep 的整数倍，"
+                f"当前比值为 {control_ratio:.6f}。"
+            )
         if self.visualization.teleop_camera_fps <= 0:
             raise ValueError("teleop_camera_fps 必须大于 0。")
         if self.visualization.teleop_camera_width <= 0:

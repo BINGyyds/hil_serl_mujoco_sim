@@ -13,6 +13,31 @@ info()  { echo -e "\033[92m[INFO]\033[0m $*"; }
 warn()  { echo -e "\033[93m[WARN]\033[0m $*"; }
 error() { echo -e "\033[91m[ERROR]\033[0m $*"; exit 1; }
 
+clean_python_numeric_stack() {
+    python - <<'PY'
+import shutil
+import site
+from pathlib import Path
+
+targets = ("numpy", "scipy")
+for site_dir in map(Path, site.getsitepackages()):
+    if not site_dir.exists():
+        continue
+    for name in targets:
+        for path in (
+            site_dir / name,
+            site_dir / f"{name}.libs",
+        ):
+            if path.exists():
+                print(f"[cleanup] removing {path}")
+                shutil.rmtree(path, ignore_errors=True)
+        for pattern in (f"{name}-*.dist-info", f"{name}-*.egg-info"):
+            for path in site_dir.glob(pattern):
+                print(f"[cleanup] removing {path}")
+                shutil.rmtree(path, ignore_errors=True)
+PY
+}
+
 if [[ "$(uname)" != "Linux" ]]; then
     error "setup_env_sim.sh 仅适用于 Ubuntu/Linux。"
 fi
@@ -81,8 +106,10 @@ info "升级 pip / setuptools / wheel"
 python -m pip install --upgrade pip setuptools wheel
 
 info "安装 Pinocchio"
-conda install "${CONDA_CHANNEL_ARGS[@]}" -n "$ENV_NAME" pinocchio -y \
-    || warn "Pinocchio 安装失败；如果后续运行 teleop/debug 入口报错，请单独处理 conda-forge pinocchio。"
+conda install "${CONDA_CHANNEL_ARGS[@]}" -n "$ENV_NAME" pinocchio -y
+
+info "清理残留的 numpy/scipy 安装产物，避免 pip/conda 混装后导入错乱"
+clean_python_numeric_stack
 
 info "以 editable 方式安装 sim_env"
 python -m pip install -e "$PROJECT_DIR"

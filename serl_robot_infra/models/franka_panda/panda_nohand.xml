@@ -187,6 +187,7 @@
                     <geom mesh="link7_7" material="white" class="panda/visual"/>
                     <geom mesh="link7_c" class="panda/collision"/>
                     <body name="attachment" pos="0 0 0.107" quat="0.3826834 0 0 0.9238795">
+                      <site name="tool_mount"/>
                       <site name="panda_link8_tcp"/>
                       <site name="attachment_site"/>
                     </body>

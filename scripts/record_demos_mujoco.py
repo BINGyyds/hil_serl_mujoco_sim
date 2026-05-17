@@ -112,7 +112,7 @@ def main() -> None:
     parser.add_argument(
         "--max_episode_steps",
         type=int,
-        default=1000,
+        default=3000,
         help="单条 demo 最多允许的环境步数。默认 1000 步约 10 秒。",
     )
     parser.add_argument(
@@ -131,14 +131,8 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
     proprio_keys = [
-        "tcp_pose",
-        "tcp_vel",
-        "q_pos",
-        "q_vel",
-        "socket_pose",
-        "relative_pose",
-        "insertion_depth",
-        "controller_target_pose",
+        "pose_error_body",
+        "twist_body",
     ]
 
     render_mode: Optional[str] = "human" if args.render_human else None
@@ -184,10 +178,11 @@ def main() -> None:
     all_demos: list = []
     episode_transitions: list = []
     demos_saved = 0
+    reanchor_button_pressed = False
 
     print(f"Recording {args.num_demos} insertion demonstrations.")
     print("  SpaceMouse controls the tool tip (6 DOF).")
-    print("  RIGHT button = save successful episode | LEFT button = discard/reset")
+    print("  RIGHT button = re-anchor teleop target | LEFT button = discard/reset")
     print(f"  Max episode steps: {args.max_episode_steps}")
     print(f"  Action scale: {args.action_scale}")
     print(
@@ -218,6 +213,9 @@ def main() -> None:
             expert_action, buttons = expert.get_action()
             left_pressed = bool(buttons[0]) if len(buttons) > 0 else False
             right_pressed = bool(buttons[1]) if len(buttons) > 1 else False
+            if right_pressed and not reanchor_button_pressed:
+                raw_env.reanchor_teleop_target_to_current_pose()
+            reanchor_button_pressed = right_pressed
 
             action = np.clip(expert_action[:6] * args.action_scale, -1.0, 1.0)
             if (
@@ -248,7 +246,7 @@ def main() -> None:
             episode_transitions.append(transition)
             obs = next_obs
 
-            should_save = right_pressed or (done and info.get("success", False))
+            should_save = done and info.get("success", False)
             should_discard = left_pressed or done or truncated
 
             if should_save:
@@ -268,6 +266,7 @@ def main() -> None:
                 )
                 episode_transitions = []
                 obs, _ = env.reset()
+                reanchor_button_pressed = False
                 maybe_render(env, args.render_human)
                 if camera_window is not None:
                     camera_window.reset_timing()
@@ -285,6 +284,7 @@ def main() -> None:
                 )
                 episode_transitions = []
                 obs, _ = env.reset()
+                reanchor_button_pressed = False
                 maybe_render(env, args.render_human)
                 if camera_window is not None:
                     camera_window.reset_timing()

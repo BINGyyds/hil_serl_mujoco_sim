@@ -7,7 +7,16 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation
+
+from serl_robot_infra.common.se3_utils import (
+    compose_transforms,
+    exp_se3,
+    exp_so3,
+    log_se3,
+    log_so3,
+    make_transform,
+    project_rotation_matrix,
+)
 
 
 class TaskSpaceVelocityController:
@@ -171,6 +180,87 @@ class TaskSpaceVelocityController:
             return None
         return self.virtual_transform.copy()
 
+    def get_internal_state(self) -> dict[str, Optional[np.ndarray]]:
+        """Return a copy of controller state for diagnostics/reproducibility."""
+        return {
+            "filtered_command": self.filtered_command.copy(),
+            "filtered_force_world": self.filtered_force_world.copy(),
+            "filtered_torque_body": self.filtered_torque_body.copy(),
+            "compliance_position_world": self.compliance_position_world.copy(),
+            "compliance_linear_velocity_world": (
+                self.compliance_linear_velocity_world.copy()
+            ),
+            "compliance_rotation_body": self.compliance_rotation_body.copy(),
+            "compliance_angular_velocity_body": (
+                self.compliance_angular_velocity_body.copy()
+            ),
+            "filtered_joint_velocity_command": (
+                self.filtered_joint_velocity_command.copy()
+            ),
+            "target_transform": None
+            if self.target_transform is None
+            else self.target_transform.copy(),
+            "virtual_transform": None
+            if self.virtual_transform is None
+            else self.virtual_transform.copy(),
+            "posture_reference": None
+            if self.posture_reference is None
+            else self.posture_reference.copy(),
+        }
+
+    def set_internal_state(self, state: dict[str, Optional[np.ndarray]]) -> None:
+        """Restore controller state captured by :meth:`get_internal_state`."""
+        self.filtered_command = np.asarray(
+            state["filtered_command"],
+            dtype=np.float64,
+        ).copy()
+        self.filtered_force_world = np.asarray(
+            state["filtered_force_world"],
+            dtype=np.float64,
+        ).copy()
+        self.filtered_torque_body = np.asarray(
+            state["filtered_torque_body"],
+            dtype=np.float64,
+        ).copy()
+        self.compliance_position_world = np.asarray(
+            state["compliance_position_world"],
+            dtype=np.float64,
+        ).copy()
+        self.compliance_linear_velocity_world = np.asarray(
+            state["compliance_linear_velocity_world"],
+            dtype=np.float64,
+        ).copy()
+        self.compliance_rotation_body = np.asarray(
+            state["compliance_rotation_body"],
+            dtype=np.float64,
+        ).copy()
+        self.compliance_angular_velocity_body = np.asarray(
+            state["compliance_angular_velocity_body"],
+            dtype=np.float64,
+        ).copy()
+        self.filtered_joint_velocity_command = np.asarray(
+            state["filtered_joint_velocity_command"],
+            dtype=np.float64,
+        ).copy()
+        self.target_transform = None
+        if state.get("target_transform") is not None:
+            self.target_transform = np.asarray(
+                state["target_transform"],
+                dtype=np.float64,
+            ).copy()
+        self.virtual_transform = None
+        if state.get("virtual_transform") is not None:
+            self.virtual_transform = np.asarray(
+                state["virtual_transform"],
+                dtype=np.float64,
+            ).copy()
+        self.posture_reference = None
+        if state.get("posture_reference") is not None:
+            self.posture_reference = np.asarray(
+                state["posture_reference"],
+                dtype=np.float64,
+            ).copy()
+
     def compute_command(
         self,
         *,
@@ -245,33 +335,24 @@ class TaskSpaceVelocityController:
         filtered_command: np.ndarray,
         dt: float,
     ) -> None:
-        """将操作者或 policy 命令积分到名义目标位姿。
-
-        当前 teleop 约定是有意混合的：平移命令按世界坐标系解释，旋转增量在
-        目标 LOCAL 坐标系下右乘，以保留 SpaceMouse 的操作手感。
-        """
+        """将 body-frame 6D twist 命令积分到名义目标位姿。"""
         if self.target_transform is None:
             raise RuntimeError("Task-space target transform is not initialized.")
 
-        delta_translation_world = (
+        body_twist = np.zeros(6, dtype=np.float64)
+        body_twist[:3] = (
             filtered_command[:3] * dt * self.max_reference_linear_velocity
         )
-        delta_rotation_local = (
+        body_twist[3:] = (
             filtered_command[3:] * dt * self.max_reference_angular_velocity
         )
-
-        target_transform = self.target_transform.copy()
-        target_rotation = target_transform[:3, :3]
-        target_position = target_transform[:3, 3]
-
-        target_position = target_position + delta_translation_world
-        target_rotation = target_rotation @ Rotation.from_rotvec(
-            delta_rotation_local
-        ).as_matrix()
-        target_rotation = self._project_rotation_matrix(target_rotation)
-
-        self.target_transform[:3, :3] = target_rotation
-        self.target_transform[:3, 3] = target_position
+        self.target_transform = compose_transforms(
+            self.target_transform,
+            exp_se3(body_twist),
+        )
+        self.target_transform[:3, :3] = project_rotation_matrix(
+            self.target_transform[:3, :3]
+        )
 
     def _filter_wrench_local(
         self,
@@ -344,10 +425,9 @@ class TaskSpaceVelocityController:
         rotation_offset_body = self._exp_so3(self.compliance_rotation_body)
         virtual_rotation = target_rotation @ rotation_offset_body
 
-        self.virtual_transform = np.eye(4, dtype=np.float64)
-        self.virtual_transform[:3, :3] = self._project_rotation_matrix(virtual_rotation)
-        self.virtual_transform[:3, 3] = (
-            target_position + self.compliance_position_world
+        self.virtual_transform = make_transform(
+            rotation=virtual_rotation,
+            translation=target_position + self.compliance_position_world,
         )
 
     def _translation_acceleration(
@@ -470,20 +550,15 @@ class TaskSpaceVelocityController:
 
     @staticmethod
     def _exp_so3(rotvec: np.ndarray) -> np.ndarray:
-        return Rotation.from_rotvec(rotvec).as_matrix()
+        return exp_so3(rotvec)
 
     @staticmethod
     def _log_so3(rotation_matrix: np.ndarray) -> np.ndarray:
-        return Rotation.from_matrix(rotation_matrix).as_rotvec()
+        return log_so3(rotation_matrix)
 
     @staticmethod
     def _project_rotation_matrix(rotation_matrix: np.ndarray) -> np.ndarray:
-        u, _, vh = np.linalg.svd(rotation_matrix)
-        projected = u @ vh
-        if np.linalg.det(projected) < 0.0:
-            u[:, -1] *= -1.0
-            projected = u @ vh
-        return projected
+        return project_rotation_matrix(rotation_matrix)
 
     def _compute_local_pose_error(
         self,
@@ -491,16 +566,13 @@ class TaskSpaceVelocityController:
         current_transform: np.ndarray,
         target_transform: np.ndarray,
     ) -> np.ndarray:
+        current_inverse = np.eye(4, dtype=np.float64)
         current_rotation = current_transform[:3, :3]
         current_position = current_transform[:3, 3]
-        target_rotation = target_transform[:3, :3]
-        target_position = target_transform[:3, 3]
-
-        position_error_local = current_rotation.T @ (target_position - current_position)
-        rotation_error_local = Rotation.from_matrix(
-            current_rotation.T @ target_rotation
-        ).as_rotvec()
-        return np.concatenate([position_error_local, rotation_error_local])
+        current_inverse[:3, :3] = current_rotation.T
+        current_inverse[:3, 3] = -(current_rotation.T @ current_position)
+        relative_transform = current_inverse @ target_transform
+        return log_se3(relative_transform)
 
     def _compute_joint_velocity_command(
         self,

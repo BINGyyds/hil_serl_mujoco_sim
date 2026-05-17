@@ -98,7 +98,7 @@ class SpaceMouseExpert:
                 buttons = state[0].buttons + state[1].buttons
             elif len(state) == 1:
                 action = [
-                    -state[0].y, state[0].x, state[0].z,
+                    -state[0].x, state[0].y, -state[0].z,
                     state[0].pitch, state[0].roll, state[0].yaw
                 ]
                 # action = [

@@ -44,7 +44,7 @@ class FrankaMujocoConfig:
     # Action scaling
     pos_action_scale: float = 0.05      # metres per unit action
     rot_action_scale: float = 0.1       # radians per unit action
-    actuator_mode: str = "position"     # position | velocity
+    actuator_mode: str = "position"     # position | velocity | torque
 
     # Simulation
     n_substeps: int = 20                 # mj_step calls per env.step()
@@ -201,9 +201,13 @@ class FrankaMujocoEnv(gym.Env):
             self.data.ctrl[self._actuator_ids] = np.zeros(self._nq, dtype=np.float64)
             return
 
+        if self.cfg.actuator_mode == "torque":
+            self.data.ctrl[self._actuator_ids] = np.zeros(self._nq, dtype=np.float64)
+            return
+
         raise ValueError(
             f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
-            "Expected 'position' or 'velocity'."
+            "Expected 'position', 'velocity' or 'torque'."
         )
 
     def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
@@ -343,9 +347,15 @@ class FrankaMujocoEnv(gym.Env):
             )
             return np.clip(qdot_target, self._ctrl_low, self._ctrl_high)
 
+        if self.cfg.actuator_mode == "torque":
+            raise NotImplementedError(
+                "Base Cartesian-delta step does not support actuator_mode='torque'. "
+                "Use a task-specific torque controller path instead."
+            )
+
         raise ValueError(
             f"Unsupported actuator_mode={self.cfg.actuator_mode!r}. "
-            "Expected 'position' or 'velocity'."
+            "Expected 'position', 'velocity' or 'torque'."
         )
 
     def _step_substeps(self) -> None:
@@ -358,6 +368,47 @@ class FrankaMujocoEnv(gym.Env):
 
         for _ in range(self.cfg.n_substeps):
             mujoco.mj_step(self.model, self.data)
+
+    def _get_site_transform_by_id(self, site_id: int) -> np.ndarray:
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = self.data.site_xmat[site_id].reshape(3, 3).copy()
+        transform[:3, 3] = self.data.site_xpos[site_id].copy()
+        return transform
+
+    def _get_site_world_jacobian(self, site_id: int) -> np.ndarray:
+        jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, site_id)
+        return np.vstack(
+            [
+                jacp[:, self._dof_addrs],
+                jacr[:, self._dof_addrs],
+            ]
+        )
+
+    def _get_site_local_jacobian(self, site_id: int) -> np.ndarray:
+        transform = self._get_site_transform_by_id(site_id)
+        jacobian_world = self._get_site_world_jacobian(site_id)
+        world_to_local = np.block(
+            [
+                [transform[:3, :3].T, np.zeros((3, 3), dtype=np.float64)],
+                [np.zeros((3, 3), dtype=np.float64), transform[:3, :3].T],
+            ]
+        )
+        return world_to_local @ jacobian_world
+
+    def _get_site_local_twist(self, site_id: int) -> np.ndarray:
+        jacobian_local = self._get_site_local_jacobian(site_id)
+        qvel = self.data.qvel[self._dof_addrs].copy()
+        return jacobian_local @ qvel
+
+    def _get_arm_mass_matrix(self) -> np.ndarray:
+        full_mass_matrix = np.zeros((self.model.nv, self.model.nv), dtype=np.float64)
+        mujoco.mj_fullM(self.model, full_mass_matrix, self.data.qM)
+        return full_mass_matrix[np.ix_(self._dof_addrs, self._dof_addrs)]
+
+    def _get_arm_bias_forces(self) -> np.ndarray:
+        return self.data.qfrc_bias[self._dof_addrs].copy()
 
     def _apply_gravity_compensation(self) -> None:
         if not self.cfg.enable_gravity_compensation:

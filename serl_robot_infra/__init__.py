@@ -7,7 +7,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 MODEL_ROOT = PACKAGE_ROOT / "models"
 
 
-def get_franka_model_path(model_name: str = "insertion_scene.xml") -> Path:
+def get_franka_model_path(model_name: str = "insertion_scene_effort.xml") -> Path:
     """Return the absolute path to a Franka MJCF file shipped with the package."""
     return MODEL_ROOT / "franka_panda" / model_name
 

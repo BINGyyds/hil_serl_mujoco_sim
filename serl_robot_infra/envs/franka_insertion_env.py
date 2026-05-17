@@ -17,10 +17,18 @@ import numpy as np
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
-from serl_robot_infra.control.task_space_velocity_controller import (
-    TaskSpaceVelocityController,
+from serl_robot_infra.common.se3_utils import (
+    compose_transforms,
+    exp_so3,
+    invert_transform,
+    log_se3,
+    log_so3,
+    make_transform,
+    rotation_matrix_to_quat_wxyz,
 )
-from serl_robot_infra.control.teleop_runtime import TeleopRuntime
+from serl_robot_infra.control.nric_torque_controller import NRICTorqueController
+from serl_robot_infra.control.se3_torque_controller import SE3TorqueController
+from serl_robot_infra.control.se3_torque_runtime import SE3TorqueRuntime
 from serl_robot_infra.envs.franka_mujoco_env import (
     FrankaMujocoConfig,
     FrankaMujocoEnv,
@@ -36,6 +44,10 @@ class InsertionConfig(FrankaMujocoConfig):
     """Configuration for the MuJoCo peg-in-hole insertion task."""
 
     socket_site_name: str = "tool_socket_center_site"
+    task_frame_site_name: str = "tool_socket_center_site"
+    control_frame_site_name: str = "tool_mount"
+    nominal_pinocchio_mjcf_path: str = ""
+    nominal_pinocchio_frame_name: str = "attachment"
 
     # Reset randomisation around the pre-insert pose.
     reset_pos_noise_low: np.ndarray = field(
@@ -45,6 +57,15 @@ class InsertionConfig(FrankaMujocoConfig):
         default_factory=lambda: np.array([0.01, 0.0015, 0.0])
     )
     reset_yaw_range: float = 0.08
+
+    # Task-case randomisation used for evaluation / transfer testing.
+    eval_case_xy_low: np.ndarray = field(
+        default_factory=lambda: np.array([-0.01, -0.0015])
+    )
+    eval_case_xy_high: np.ndarray = field(
+        default_factory=lambda: np.array([0.01, 0.0015])
+    )
+    eval_case_yaw_range: float = 0.08
 
     # reset 随机化阶段使用的有界非线性最小二乘 IK。
     reset_ik_max_iters: int = 80
@@ -62,13 +83,13 @@ class InsertionConfig(FrankaMujocoConfig):
     # Reward weights.
     reward_xy_weight: float = 8.0
     reward_z_weight: float = 1.5
-    reward_rot_weight: float = 0.3
+    reward_rot_weight: float = 1.2
     reward_depth_weight: float = 2.0
     reward_success_bonus: float = 2000.0
     reward_failure_penalty: float = 25.0
     reward_step_penalty: float = 0.01
     reward_depth_xy_threshold: float = 0.004
-    reward_depth_rot_threshold: float = 0.12
+    reward_depth_rot_threshold: float = 0.1
     # Reserved for potential incremental depth shaping; currently unused.
     reward_depth_deadband: float = 0.0002
 
@@ -98,9 +119,9 @@ class InsertionConfig(FrankaMujocoConfig):
     input_filter_alpha: float = 0.25
     max_reference_linear_velocity: float = 0.05
     max_reference_angular_velocity: float = 0.10
-    pose_error_gain: float = 25.0
+    max_reference_linear_offset: float = 0.01
+    max_reference_angular_offset: float = 0.2
     ik_damping: float = 1e-4
-    nullspace_gain: float = 0.15
     joint_velocity_limits: Tuple[float, ...] = (
         2.175,
         2.175,
@@ -111,41 +132,27 @@ class InsertionConfig(FrankaMujocoConfig):
         2.610,
     )
     joint_limit_margin: float = 0.05
-    enable_admittance: bool = False
-    wrench_filter_alpha: float = 0.2
-    force_deadband: Tuple[float, float, float] = (1.0, 1.0, 1.0)
-    torque_deadband: Tuple[float, float, float] = (0.05, 0.05, 0.05)
-    max_force_world: Tuple[float, float, float] = (20.0, 20.0, 20.0)
-    max_torque_world: Tuple[float, float, float] = (2.0, 2.0, 2.0)
-    admittance_mass: Tuple[float, ...] = (
-        2.0,
-        2.0,
-        3.0,
-        0.15,
-        0.15,
-        0.15,
-    )
-    admittance_damping: Tuple[float, ...] = (
-        80.0,
-        80.0,
-        110.0,
-        8.0,
-        8.0,
-        8.0,
-    )
-    admittance_stiffness: Tuple[float, ...] = (
-        80.0,
-        80.0,
-        140.0,
+    use_external_wrench_feedback: bool = False
+    enable_nric: bool = True
+    impedance_inertia: Tuple[float, ...] = (1.0, 1.0, 1.0, 0.1, 0.1, 0.1)
+    impedance_stiffness: Tuple[float, ...] = (100.0, 100.0, 100.0, 10.0, 10.0, 10.0)
+    impedance_damping: Tuple[float, ...] = (
         10.0,
         10.0,
         10.0,
+        1.0,
+        1.0,
+        1.0,
     )
-    max_compliance_linear_offset: float = 0.02
-    max_compliance_angular_offset: float = 0.2
-    max_compliance_linear_velocity: float = 0.10
-    max_compliance_angular_velocity: float = 0.5
-    joint_velocity_filter_alpha: float = 1.0
+    nullspace_stiffness: float = 0.0
+    nullspace_damping: float = 0.0
+    nric_k_gamma: Tuple[float, ...] = (2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0)
+    nric_k_p: Tuple[float, ...] = (5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0)
+    nric_k_i: Tuple[float, ...] = (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+    nric_integral_limit: float = 0.2
+    nric_integral_deadband: float = 5e-3
+    nric_integral_leak_rate: float = 0.2
+    nric_zero_cross_reset_ratio: float = 0.2
 
 
 class FrankaInsertionEnv(FrankaMujocoEnv):
@@ -160,47 +167,28 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         super().__init__(config=self.insertion_cfg, render_mode=render_mode)
 
         self._socket_site_id = self.model.site(self.insertion_cfg.socket_site_name).id
+        self._task_frame_site_id = self.model.site(
+            self.insertion_cfg.task_frame_site_name
+        ).id
+        self._socket_body_id = int(self.model.site(self._task_frame_site_id).bodyid)
         self._step_count = 0
         self._ik_data = mujoco.MjData(self.model)
         self._last_reset_ik_q: Optional[np.ndarray] = None
-        self._task_space_controller = TaskSpaceVelocityController(
-            input_deadzone=self.insertion_cfg.input_deadzone,
-            input_filter_alpha=self.insertion_cfg.input_filter_alpha,
-            max_reference_linear_velocity=self.insertion_cfg.max_reference_linear_velocity,
-            max_reference_angular_velocity=self.insertion_cfg.max_reference_angular_velocity,
-            pose_error_gain=self.insertion_cfg.pose_error_gain,
-            ik_damping=self.insertion_cfg.ik_damping,
-            nullspace_gain=self.insertion_cfg.nullspace_gain,
-            joint_velocity_limits=np.asarray(
-                self.insertion_cfg.joint_velocity_limits,
-                dtype=np.float64,
-            ),
-            joint_limit_margin=self.insertion_cfg.joint_limit_margin,
-            lower_position_limits=self._q_low,
-            upper_position_limits=self._q_high,
-            enable_admittance=self.insertion_cfg.enable_admittance,
-            wrench_filter_alpha=self.insertion_cfg.wrench_filter_alpha,
-            force_deadband=np.asarray(self.insertion_cfg.force_deadband, dtype=np.float64),
-            torque_deadband=np.asarray(self.insertion_cfg.torque_deadband, dtype=np.float64),
-            max_force_world=np.asarray(self.insertion_cfg.max_force_world, dtype=np.float64),
-            max_torque_world=np.asarray(self.insertion_cfg.max_torque_world, dtype=np.float64),
-            admittance_mass=np.asarray(self.insertion_cfg.admittance_mass, dtype=np.float64),
-            admittance_damping=np.asarray(self.insertion_cfg.admittance_damping, dtype=np.float64),
-            admittance_stiffness=np.asarray(self.insertion_cfg.admittance_stiffness, dtype=np.float64),
-            max_compliance_linear_offset=self.insertion_cfg.max_compliance_linear_offset,
-            max_compliance_angular_offset=self.insertion_cfg.max_compliance_angular_offset,
-            max_compliance_linear_velocity=self.insertion_cfg.max_compliance_linear_velocity,
-            max_compliance_angular_velocity=self.insertion_cfg.max_compliance_angular_velocity,
-            joint_velocity_filter_alpha=self.insertion_cfg.joint_velocity_filter_alpha,
+        self._default_socket_body_pos = self.model.body_pos[self._socket_body_id].copy()
+        self._default_socket_body_quat = self.model.body_quat[
+            self._socket_body_id
+        ].copy()
+        self._default_socket_body_rot = self._body_quat_wxyz_to_rotation(
+            self._default_socket_body_quat
         )
-        self._teleop_runtime = TeleopRuntime(
-            controller=self._task_space_controller,
-            get_control_state=self._get_teleop_control_state,
-            set_joint_velocity=self._set_joint_velocity_command,
-            step_simulation=self._step_substeps,
-            control_dt=self.cfg.control_dt,
-            enable_admittance=self.insertion_cfg.enable_admittance,
-        )
+        self._current_task_case_xy = np.zeros(2, dtype=np.float64)
+        self._current_task_case_yaw = 0.0
+        self._current_reset_case_pos_noise = np.zeros(3, dtype=np.float64)
+        self._current_reset_case_yaw = 0.0
+        self._control_frame_site_id = self.model.site(
+            self.insertion_cfg.control_frame_site_name
+        ).id
+        self._control_wrench_bias_local = np.zeros(6, dtype=np.float64)
 
         state_spaces = dict(self._base_state_spaces)
         state_spaces["socket_pose"] = spaces.Box(
@@ -215,17 +203,87 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         state_spaces["controller_target_pose"] = spaces.Box(
             -np.inf, np.inf, shape=(7,), dtype=np.float64
         )
+        state_spaces["pose_error_body"] = spaces.Box(
+            -np.inf, np.inf, shape=(6,), dtype=np.float64
+        )
+        state_spaces["twist_body"] = spaces.Box(
+            -np.inf, np.inf, shape=(6,), dtype=np.float64
+        )
         self.observation_space = spaces.Dict(
             {"state": spaces.Dict(state_spaces)}
         )
 
         self._reset_to_home_state()
-
-        self._preinsert_tip_pos, self._target_tip_rot = self._get_ee_pose()
-        self._socket_pos, self._socket_rot = self._get_socket_pose()
-        self._max_insertion_depth = max(
-            float(self._preinsert_tip_pos[2] - self._socket_pos[2]), 1e-6
+        self._tool_tip_to_control_transform = compose_transforms(
+            invert_transform(self._get_current_transform()),
+            self._get_control_frame_transform(),
         )
+        self._task_space_controller = SE3TorqueController(
+            apparent_inertia=np.asarray(self.insertion_cfg.impedance_inertia, dtype=np.float64),
+            lambda_stiffness=np.asarray(self.insertion_cfg.impedance_stiffness, dtype=np.float64),
+            physical_damping=np.asarray(self.insertion_cfg.impedance_damping, dtype=np.float64),
+            q_nominal=self.data.qpos[self._qpos_addrs].copy(),
+            nullspace_stiffness=self.insertion_cfg.nullspace_stiffness,
+            nullspace_damping=self.insertion_cfg.nullspace_damping,
+        )
+        self._nric_controller = NRICTorqueController(
+            nominal_mjcf_path=self.insertion_cfg.nominal_pinocchio_mjcf_path,
+            end_effector_frame_name=self.insertion_cfg.nominal_pinocchio_frame_name,
+            time_step=self.cfg.control_dt,
+            gravity_z=float(self.model.opt.gravity[2]),
+            enabled=self.insertion_cfg.enable_nric,
+            q_nominal=self.data.qpos[self._qpos_addrs].copy(),
+            apparent_inertia=np.asarray(self.insertion_cfg.impedance_inertia, dtype=np.float64),
+            lambda_stiffness=np.asarray(self.insertion_cfg.impedance_stiffness, dtype=np.float64),
+            physical_damping=np.asarray(self.insertion_cfg.impedance_damping, dtype=np.float64),
+            nullspace_stiffness=self.insertion_cfg.nullspace_stiffness,
+            nullspace_damping=self.insertion_cfg.nullspace_damping,
+            k_gamma=np.asarray(self.insertion_cfg.nric_k_gamma, dtype=np.float64),
+            k_p=np.asarray(self.insertion_cfg.nric_k_p, dtype=np.float64),
+            k_i=np.asarray(self.insertion_cfg.nric_k_i, dtype=np.float64),
+            integral_limit=self.insertion_cfg.nric_integral_limit,
+            integral_deadband=self.insertion_cfg.nric_integral_deadband,
+            integral_leak_rate=self.insertion_cfg.nric_integral_leak_rate,
+            zero_cross_reset_ratio=self.insertion_cfg.nric_zero_cross_reset_ratio,
+        )
+        self._teleop_runtime = SE3TorqueRuntime(
+            controller=self._task_space_controller,
+            nric_controller=self._nric_controller,
+            get_control_state=self._get_teleop_control_state,
+            set_joint_torque=self._set_joint_torque_command,
+            step_simulation=self._step_substeps,
+            control_dt=self.cfg.control_dt,
+            sim_steps_per_control=1,
+            tip_to_control_transform=self._tool_tip_to_control_transform,
+            input_deadzone=self.insertion_cfg.input_deadzone,
+            input_filter_alpha=self.insertion_cfg.input_filter_alpha,
+            max_reference_linear_velocity=self.insertion_cfg.max_reference_linear_velocity,
+            max_reference_angular_velocity=self.insertion_cfg.max_reference_angular_velocity,
+            max_reference_linear_offset=self.insertion_cfg.max_reference_linear_offset,
+            max_reference_angular_offset=self.insertion_cfg.max_reference_angular_offset,
+            use_external_wrench_feedback=self.insertion_cfg.use_external_wrench_feedback,
+        )
+
+        self._preinsert_tip_pos, self._default_goal_tip_rot = self._get_ee_pose()
+        self._socket_pos, self._socket_rot = self._get_socket_pose()
+        self._default_goal_tip_transform = make_transform(
+            rotation=self._default_goal_tip_rot,
+            translation=self._socket_pos,
+        )
+        self._default_preinsert_tip_transform = make_transform(
+            rotation=self._default_goal_tip_rot,
+            translation=self._preinsert_tip_pos,
+        )
+        self._default_preinsert_from_goal = compose_transforms(
+            invert_transform(self._default_goal_tip_transform),
+            self._default_preinsert_tip_transform,
+        )
+        self._goal_tip_transform = self._default_goal_tip_transform.copy()
+        self._preinsert_tip_transform = self._default_preinsert_tip_transform.copy()
+        self._goal_frame_preinsert_translation = np.zeros(3, dtype=np.float64)
+        self._axial_reference_sign = 1.0
+        self._max_insertion_depth = 1e-6
+        self._update_task_geometry_state()
 
     def reset(
         self,
@@ -241,10 +299,11 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         """
         obs, info = super().reset(seed=seed, options=options)
         self._step_count = 0
-        self._socket_pos, self._socket_rot = self._get_socket_pose()
+        self._configure_task_case(options)
 
         target_tip_pos, target_tip_rot = self._sample_reset_tip_pose()
         self._set_tip_pose_with_ik(target_tip_pos, target_tip_rot)
+        self._tare_control_wrench()
         self._sync_controller_reference_to_current_state()
 
         obs = self._get_obs()
@@ -278,31 +337,32 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         relative_quat = Rotation.from_matrix(socket_rot @ tip_rot.T).as_quat()
         relative_pos = socket_pos - tip_pos
 
-        insertion_depth = np.array(
-            [
-                np.clip(
-                    self._preinsert_tip_pos[2] - tip_pos[2],
-                    0.0,
-                    self._max_insertion_depth,
-                )
-            ],
-            dtype=np.float64,
+        pose_error_body = self._compute_pose_error_body(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
+        )
+        twist_body = self._get_ee_body_twist()
+        _, _, _, insertion_depth = self._compute_goal_frame_errors(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
         )
 
         obs["state"]["socket_pose"] = np.concatenate([socket_pos, socket_quat])
         obs["state"]["relative_pose"] = np.concatenate([relative_pos, relative_quat])
-        obs["state"]["insertion_depth"] = insertion_depth
+        obs["state"]["insertion_depth"] = np.array([insertion_depth], dtype=np.float64)
         obs["state"]["controller_target_pose"] = self._get_controller_target_pose()
+        obs["state"]["pose_error_body"] = pose_error_body
+        obs["state"]["twist_body"] = twist_body
         return obs
 
     def _compute_reward(self, obs: Dict) -> float:
         tip_pos, tip_rot = self._get_ee_pose()
-        socket_pos, _ = self._get_socket_pose()
         cfg = self.insertion_cfg
 
-        xy_error = float(np.linalg.norm(tip_pos[:2] - socket_pos[:2]))
-        z_gap = float(max(tip_pos[2] - socket_pos[2], 0.0))
-        rot_error = self._compute_rotation_error(tip_rot)
+        xy_error, z_gap, rot_error, _ = self._compute_goal_frame_errors(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
+        )
         current_insertion_depth = float(obs["state"]["insertion_depth"][0])
         normalized_depth = current_insertion_depth / self._max_insertion_depth
 
@@ -337,20 +397,12 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
     def _get_info(self, obs: Dict) -> Dict[str, Any]:
         tip_pos, tip_rot = self._get_ee_pose()
         tip_lin_vel, tip_ang_vel = self._get_ee_velocity()
-        socket_pos, _ = self._get_socket_pose()
-
-        xy_error = float(np.linalg.norm(tip_pos[:2] - socket_pos[:2]))
-        z_gap = float(max(tip_pos[2] - socket_pos[2], 0.0))
-        rot_error = self._compute_rotation_error(tip_rot)
+        xy_error, z_gap, rot_error, insertion_depth = self._compute_goal_frame_errors(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
+        )
         linear_speed = float(np.linalg.norm(tip_lin_vel))
         angular_speed = float(np.linalg.norm(tip_ang_vel))
-        insertion_depth = float(
-            np.clip(
-                self._preinsert_tip_pos[2] - tip_pos[2],
-                0.0,
-                self._max_insertion_depth,
-            )
-        )
         success = self._is_success(tip_pos, tip_rot)
         failure = self._is_failure(tip_pos)
 
@@ -363,6 +415,13 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             "insertion_depth": insertion_depth,
             "success": success,
             "failure": failure,
+            "task_case_x": float(self._current_task_case_xy[0]),
+            "task_case_y": float(self._current_task_case_xy[1]),
+            "task_case_yaw": float(self._current_task_case_yaw),
+            "reset_case_x": float(self._current_reset_case_pos_noise[0]),
+            "reset_case_y": float(self._current_reset_case_pos_noise[1]),
+            "reset_case_z": float(self._current_reset_case_pos_noise[2]),
+            "reset_case_yaw": float(self._current_reset_case_yaw),
         }
 
     def _sample_reset_tip_pose(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -375,15 +434,21 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         yaw_noise = float(
             self.np_random.uniform(-cfg.reset_yaw_range, cfg.reset_yaw_range)
         )
+        self._current_reset_case_pos_noise = np.asarray(
+            pos_noise,
+            dtype=np.float64,
+        ).reshape((3,))
+        self._current_reset_case_yaw = yaw_noise
 
-        target_tip_pos = self._preinsert_tip_pos + pos_noise
+        target_tip_pos = self._preinsert_tip_transform[:3, 3] + pos_noise
         target_tip_pos = np.clip(
             target_tip_pos,
             cfg.workspace_low,
             cfg.workspace_high,
         )
         target_tip_rot = (
-            Rotation.from_euler("z", yaw_noise).as_matrix() @ self._target_tip_rot
+            self._goal_tip_transform[:3, :3]
+            @ Rotation.from_euler("z", yaw_noise).as_matrix()
         )
         return target_tip_pos, target_tip_rot
 
@@ -394,9 +459,9 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
     ) -> None:
         """使用有界 site 位姿 IK 将仿真机械臂移动到 reset 位姿。
 
-        该函数只在 episode 初始化时使用。运行时 action 仍然经过
-        :class:`TaskSpaceVelocityController` 及其速度级 DLS 求解，因此修改该
-        函数不会改变每一步 policy 控制逻辑。
+        该函数只在 episode 初始化时使用。运行时 action 会进入当前的
+        SE(3) torque controller + NRIC 主链，因此修改该函数不会改变每一步
+        policy 控制逻辑。
         """
         cfg = self.insertion_cfg
         target_transform = np.eye(4, dtype=np.float64)
@@ -449,6 +514,11 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         rot = self.data.site_xmat[self._socket_site_id].reshape(3, 3).copy()
         return pos, rot
 
+    def _get_task_frame_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        pos = self.data.site_xpos[self._task_frame_site_id].copy()
+        rot = self.data.site_xmat[self._task_frame_site_id].reshape(3, 3).copy()
+        return pos, rot
+
     def _get_current_transform(self) -> np.ndarray:
         pos, rot = self._get_ee_pose()
         transform = np.eye(4, dtype=np.float64)
@@ -476,39 +546,104 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         ])
         return world_to_local @ jacobian_world
 
-    def _get_teleop_control_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        q_current = self.data.qpos[self._qpos_addrs].copy()
-        current_transform = self._get_current_transform()
-        jacobian = self._get_site_jacobian()
-        return q_current, current_transform, jacobian
+    def _get_control_frame_transform(self) -> np.ndarray:
+        return self._get_site_transform_by_id(self._control_frame_site_id)
 
-    def _set_joint_velocity_command(self, joint_velocity_command: np.ndarray) -> None:
-        self.data.ctrl[self._actuator_ids] = np.asarray(
-            joint_velocity_command,
+    def _get_control_frame_jacobian(self) -> np.ndarray:
+        return self._get_site_local_jacobian(self._control_frame_site_id)
+
+    def _get_control_frame_twist(self) -> np.ndarray:
+        return self._get_site_local_twist(self._control_frame_site_id)
+
+    def _get_control_wrench_local_raw(self) -> np.ndarray:
+        if not hasattr(self, "_control_force_slice"):
+            force_sensor_id = self.model.sensor("attachment_site_force_sensor").id
+            torque_sensor_id = self.model.sensor("attachment_site_torque_sensor").id
+            force_adr = int(self.model.sensor_adr[force_sensor_id])
+            torque_adr = int(self.model.sensor_adr[torque_sensor_id])
+            self._control_force_slice = slice(force_adr, force_adr + 3)
+            self._control_torque_slice = slice(torque_adr, torque_adr + 3)
+        force = np.asarray(
+            self.data.sensordata[self._control_force_slice],
             dtype=np.float64,
+        ).copy()
+        torque = np.asarray(
+            self.data.sensordata[self._control_torque_slice],
+            dtype=np.float64,
+        ).copy()
+        # MuJoCo site force/torque sensors report the child-parent interaction
+        # wrench. 这里翻转为“环境作用在末端上的外力”语义，与参考实现一致。
+        return -np.concatenate([force, torque])
+
+    def _tare_control_wrench(self) -> None:
+        self._control_wrench_bias_local = self._get_control_wrench_local_raw()
+
+    def _get_control_wrench_local(self) -> np.ndarray:
+        return self._get_control_wrench_local_raw() - self._control_wrench_bias_local
+
+    def _get_control_frame_wrench(self) -> np.ndarray:
+        return self._get_control_wrench_local()
+
+    def _get_teleop_control_state(self) -> Dict[str, np.ndarray]:
+        return {
+            "q": self.data.qpos[self._qpos_addrs].copy(),
+            "q_dot": self.data.qvel[self._dof_addrs].copy(),
+            "tip_transform": self._get_current_transform(),
+            "control_transform": self._get_control_frame_transform(),
+            "control_jacobian_body": self._get_control_frame_jacobian(),
+            "control_twist_body": self._get_control_frame_twist(),
+            "mass_matrix": self._get_arm_mass_matrix(),
+            "bias_forces": self._get_arm_bias_forces(),
+            "wrench_body": self._get_control_frame_wrench(),
+        }
+
+    def _set_joint_torque_command(self, joint_torque_command: np.ndarray) -> None:
+        self.data.ctrl[self._actuator_ids] = np.asarray(
+            joint_torque_command,
+            dtype=np.float64,
+        )
+
+    def _body_twist_to_joint_velocity(self, body_twist: np.ndarray) -> np.ndarray:
+        jacobian = self._get_site_jacobian()
+        damping_matrix = self.insertion_cfg.ik_damping * np.eye(6, dtype=np.float64)
+        jjt = jacobian @ jacobian.T
+        jacobian_pinv = jacobian.T @ np.linalg.solve(
+            jjt + damping_matrix,
+            np.eye(6, dtype=np.float64),
+        )
+        qdot = jacobian_pinv @ np.asarray(body_twist, dtype=np.float64).reshape((6,))
+        return np.clip(
+            qdot,
+            -np.asarray(self.insertion_cfg.joint_velocity_limits, dtype=np.float64),
+            np.asarray(self.insertion_cfg.joint_velocity_limits, dtype=np.float64),
         )
 
     def _sync_controller_reference_to_current_state(self) -> None:
         self._teleop_runtime.reset_reference()
 
+    def reanchor_teleop_target_to_current_pose(self) -> None:
+        """将 teleop 目标重新锚定到当前真实末端位姿。"""
+        self._tare_control_wrench()
+        self._sync_controller_reference_to_current_state()
+
     def _get_controller_target_pose(self) -> np.ndarray:
-        target_transform = self._task_space_controller.get_target_transform()
+        target_transform = self._teleop_runtime.get_target_tip_transform()
         if target_transform is None:
             target_transform = self._get_current_transform()
         target_quat = Rotation.from_matrix(target_transform[:3, :3]).as_quat()
         return np.concatenate([target_transform[:3, 3], target_quat])
 
     def _compute_rotation_error(self, tip_rot: np.ndarray) -> float:
-        rotation_delta = self._target_tip_rot.T @ tip_rot
-        cos_angle = np.clip((np.trace(rotation_delta) - 1.0) / 2.0, -1.0, 1.0)
-        return float(np.arccos(cos_angle))
+        rotation_delta = self._goal_tip_transform[:3, :3].T @ tip_rot
+        return float(np.linalg.norm(log_so3(rotation_delta)))
 
     def _is_success(self, tip_pos: np.ndarray, tip_rot: np.ndarray) -> bool:
         cfg = self.insertion_cfg
         tip_lin_vel, tip_ang_vel = self._get_ee_velocity()
-        xy_error = np.linalg.norm(tip_pos[:2] - self._socket_pos[:2])
-        z_gap = max(float(tip_pos[2] - self._socket_pos[2]), 0.0)
-        rot_error = self._compute_rotation_error(tip_rot)
+        xy_error, z_gap, rot_error, _ = self._compute_goal_frame_errors(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
+        )
         linear_speed = np.linalg.norm(tip_lin_vel)
         angular_speed = np.linalg.norm(tip_ang_vel)
         return bool(
@@ -524,10 +659,229 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         out_of_workspace = np.any(tip_pos < cfg.workspace_low) or np.any(
             tip_pos > cfg.workspace_high
         )
-        xy_error = np.linalg.norm(tip_pos[:2] - self._socket_pos[:2])
-        z_gap = max(float(tip_pos[2] - self._socket_pos[2]), 0.0)
+        _, tip_rot = self._get_ee_pose()
+        xy_error, z_gap, _, _ = self._compute_goal_frame_errors(
+            tip_pos=tip_pos,
+            tip_rot=tip_rot,
+        )
         obvious_misalignment = (
             z_gap < cfg.failure_z_gap_threshold
             and xy_error > cfg.failure_xy_threshold
         )
         return bool(out_of_workspace or obvious_misalignment)
+
+    @staticmethod
+    def _body_quat_wxyz_to_rotation(quat_wxyz: np.ndarray) -> np.ndarray:
+        quat_wxyz = np.asarray(quat_wxyz, dtype=np.float64).reshape((4,))
+        quat_xyzw = np.array(
+            [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]],
+            dtype=np.float64,
+        )
+        return Rotation.from_quat(quat_xyzw).as_matrix()
+
+    def _sample_eval_task_case(self) -> tuple[np.ndarray, float]:
+        cfg = self.insertion_cfg
+        xy_offset = self.np_random.uniform(cfg.eval_case_xy_low, cfg.eval_case_xy_high)
+        yaw_offset = float(
+            self.np_random.uniform(-cfg.eval_case_yaw_range, cfg.eval_case_yaw_range)
+        )
+        return np.asarray(xy_offset, dtype=np.float64), yaw_offset
+
+    def _restore_default_task_case(self) -> None:
+        self.model.body_pos[self._socket_body_id] = self._default_socket_body_pos.copy()
+        self.model.body_quat[self._socket_body_id] = self._default_socket_body_quat.copy()
+        mujoco.mj_forward(self.model, self.data)
+        self._current_task_case_xy[:] = 0.0
+        self._current_task_case_yaw = 0.0
+        self._goal_tip_transform = self._default_goal_tip_transform.copy()
+        self._preinsert_tip_transform = self._default_preinsert_tip_transform.copy()
+        self._update_task_geometry_state()
+
+    def _apply_task_case(self, *, xy_offset: np.ndarray, yaw_offset: float) -> None:
+        case_body_rotation = self._default_socket_body_rot @ exp_so3(
+            np.array([0.0, 0.0, yaw_offset], dtype=np.float64)
+        )
+        body_position = self._default_socket_body_pos.copy()
+        body_position[:2] += np.asarray(xy_offset, dtype=np.float64).reshape((2,))
+        self.model.body_pos[self._socket_body_id] = body_position
+        self.model.body_quat[self._socket_body_id] = rotation_matrix_to_quat_wxyz(
+            case_body_rotation
+        )
+        mujoco.mj_forward(self.model, self.data)
+
+        task_pos, _ = self._get_task_frame_pose()
+        goal_rotation = self._default_goal_tip_rot @ exp_so3(
+            np.array([0.0, 0.0, yaw_offset], dtype=np.float64)
+        )
+        self._goal_tip_transform = make_transform(
+            rotation=goal_rotation,
+            translation=task_pos,
+        )
+        self._preinsert_tip_transform = compose_transforms(
+            self._goal_tip_transform,
+            self._default_preinsert_from_goal,
+        )
+        self._current_task_case_xy = np.asarray(xy_offset, dtype=np.float64).reshape((2,))
+        self._current_task_case_yaw = float(yaw_offset)
+        self._update_task_geometry_state()
+
+    def _configure_task_case(self, options: Optional[Dict[str, Any]]) -> None:
+        self._restore_default_task_case()
+        options = options or {}
+        task_case = options.get("task_case")
+        if isinstance(task_case, dict):
+            xy_offset = np.asarray(
+                task_case.get("xy", np.zeros(2, dtype=np.float64)),
+                dtype=np.float64,
+            ).reshape((2,))
+            yaw_offset = float(task_case.get("yaw", 0.0))
+            self._apply_task_case(xy_offset=xy_offset, yaw_offset=yaw_offset)
+            return
+        if bool(options.get("sample_task_case", False)):
+            xy_offset, yaw_offset = self._sample_eval_task_case()
+            self._apply_task_case(xy_offset=xy_offset, yaw_offset=yaw_offset)
+
+    def _update_task_geometry_state(self) -> None:
+        self._socket_pos, self._socket_rot = self._get_socket_pose()
+        goal_to_preinsert = compose_transforms(
+            invert_transform(self._goal_tip_transform),
+            self._preinsert_tip_transform,
+        )
+        self._goal_frame_preinsert_translation = goal_to_preinsert[:3, 3].copy()
+        axial_reference = float(self._goal_frame_preinsert_translation[2])
+        self._axial_reference_sign = np.sign(axial_reference) if abs(axial_reference) > 1e-9 else 1.0
+        self._max_insertion_depth = max(abs(axial_reference), 1e-6)
+        self._preinsert_tip_pos = self._preinsert_tip_transform[:3, 3].copy()
+
+    def _compute_pose_error_body(
+        self,
+        *,
+        tip_pos: np.ndarray,
+        tip_rot: np.ndarray,
+    ) -> np.ndarray:
+        tip_transform = make_transform(rotation=tip_rot, translation=tip_pos)
+        relative = compose_transforms(invert_transform(tip_transform), self._goal_tip_transform)
+        return log_se3(relative)
+
+    def _get_ee_body_twist(self) -> np.ndarray:
+        ee_lin_vel, ee_ang_vel = self._get_ee_velocity()
+        _, ee_rot = self._get_ee_pose()
+        rotation_world_to_body = ee_rot.T
+        linear_body = rotation_world_to_body @ ee_lin_vel
+        angular_body = rotation_world_to_body @ ee_ang_vel
+        return np.concatenate([linear_body, angular_body])
+
+    def _compute_goal_frame_errors(
+        self,
+        *,
+        tip_pos: np.ndarray,
+        tip_rot: np.ndarray,
+    ) -> tuple[float, float, float, float]:
+        goal_transform = self._goal_tip_transform
+        goal_rot = goal_transform[:3, :3]
+        goal_pos = goal_transform[:3, 3]
+        tip_translation_goal = goal_rot.T @ (tip_pos - goal_pos)
+        axial_offset = float(tip_translation_goal[2] * self._axial_reference_sign)
+        xy_error = float(np.linalg.norm(tip_translation_goal[:2]))
+        z_gap = float(max(axial_offset, 0.0))
+        rot_error = float(np.linalg.norm(log_so3(goal_rot.T @ tip_rot)))
+        insertion_depth = float(
+            np.clip(
+                self._max_insertion_depth - axial_offset,
+                0.0,
+                self._max_insertion_depth,
+            )
+        )
+        return xy_error, z_gap, rot_error, insertion_depth
+
+    def capture_diagnostic_snapshot(self) -> Dict[str, Any]:
+        """Capture enough simulator/controller state to reproduce one state."""
+        tip_pos, tip_rot = self._get_ee_pose()
+        tip_transform = make_transform(rotation=tip_rot, translation=tip_pos)
+        return {
+            "qpos": self.data.qpos.copy(),
+            "qvel": self.data.qvel.copy(),
+            "ctrl": self.data.ctrl.copy(),
+            "step_count": int(self._step_count),
+            "task_case_xy": self._current_task_case_xy.copy(),
+            "task_case_yaw": float(self._current_task_case_yaw),
+            "goal_tip_transform": self._goal_tip_transform.copy(),
+            "preinsert_tip_transform": self._preinsert_tip_transform.copy(),
+            "tip_transform": tip_transform,
+            "twist_body": self._get_ee_body_twist().copy(),
+            "controller_state": self._teleop_runtime.get_internal_state(),
+        }
+
+    def restore_diagnostic_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """Restore a snapshot captured by :meth:`capture_diagnostic_snapshot`."""
+        self._configure_task_case(
+            {
+                "task_case": {
+                    "xy": snapshot["task_case_xy"],
+                    "yaw": snapshot["task_case_yaw"],
+                }
+            }
+        )
+        self.data.qpos[:] = np.asarray(snapshot["qpos"], dtype=np.float64)
+        self.data.qvel[:] = np.asarray(snapshot["qvel"], dtype=np.float64)
+        self.data.ctrl[:] = np.asarray(snapshot["ctrl"], dtype=np.float64)
+        self._step_count = int(snapshot["step_count"])
+        mujoco.mj_forward(self.model, self.data)
+        self._teleop_runtime.set_internal_state(snapshot["controller_state"])
+
+    def restore_transformed_diagnostic_snapshot(
+        self,
+        snapshot: Dict[str, Any],
+        *,
+        xy_offset: np.ndarray,
+        yaw_offset: float,
+    ) -> None:
+        """Restore a task-case transformed version of a captured snapshot.
+
+        The matched state keeps the same task-relative pose error by applying the
+        rigid task-case transform to the robot tip pose and the controller's
+        internal target/virtual transforms. Body-frame twist is preserved by
+        solving a local Jacobian least-squares velocity after IK.
+        """
+        self._configure_task_case(
+            {
+                "task_case": {
+                    "xy": np.asarray(xy_offset, dtype=np.float64).reshape((2,)),
+                    "yaw": float(yaw_offset),
+                }
+            }
+        )
+
+        delta_transform = compose_transforms(
+            self._goal_tip_transform,
+            invert_transform(np.asarray(snapshot["goal_tip_transform"], dtype=np.float64)),
+        )
+        matched_tip_transform = compose_transforms(
+            delta_transform,
+            np.asarray(snapshot["tip_transform"], dtype=np.float64),
+        )
+        self._set_tip_pose_with_ik(
+            matched_tip_transform[:3, 3],
+            matched_tip_transform[:3, :3],
+        )
+        self.data.qvel[:] = 0.0
+        self.data.qvel[self._dof_addrs] = self._body_twist_to_joint_velocity(
+            snapshot["twist_body"]
+        )
+        self._sync_actuator_ctrl_to_current_state()
+        mujoco.mj_forward(self.model, self.data)
+
+        controller_state = snapshot["controller_state"].copy()
+        if controller_state.get("target_tip_transform") is not None:
+            controller_state["target_tip_transform"] = compose_transforms(
+                delta_transform,
+                np.asarray(controller_state["target_tip_transform"], dtype=np.float64),
+            )
+        nric_state = controller_state.get("nric_state")
+        if isinstance(nric_state, dict):
+            if "nominal_q" in nric_state:
+                nric_state["nominal_q"] = self.data.qpos[self._qpos_addrs].copy()
+            if "nominal_qdot" in nric_state:
+                nric_state["nominal_qdot"] = self.data.qvel[self._dof_addrs].copy()
+        self._teleop_runtime.set_internal_state(controller_state)
+        self._step_count = int(snapshot["step_count"])

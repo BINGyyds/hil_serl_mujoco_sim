@@ -5,8 +5,8 @@
 当前主线：
 
 - 环境：`FrankaInsertionEnv`
-- 模型：`panda_nohand_velocity.xml`
-- 控制链：SpaceMouse + task-space velocity control
+- 模型：`insertion_scene_effort.xml`
+- 控制链：SpaceMouse + `SE(3)` torque control + NRIC
 
 ## 安装
 
@@ -57,10 +57,21 @@ python scripts/record_demos_mujoco.py \
 
 当前保留的视觉相关能力：
 
-- velocity MJCF 中的 debug / eval cameras
+- effort MJCF 中的 debug / eval cameras
 - `--show-cameras`
 - `MujocoInterface.render_*`
 - eval 视频相机选择逻辑
+
+## 控制说明
+
+当前插入主线默认使用：
+
+- effort actuator
+- `SE(3)` torque controller
+- NRIC 名义补偿
+- Pinocchio 内部动力学模型
+
+高层 6D action 语义保持不变，仍然是 body-frame 目标命令。
 
 这部分可以直接支撑后续把末端或场景相机画面接进 RL observation。
 

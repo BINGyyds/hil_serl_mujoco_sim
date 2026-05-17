@@ -28,7 +28,7 @@ class TeleopRuntime:
     """共享任务空间速度控制运行时。
 
     action 约定：
-        * action[0:3] 是世界系平移命令。
+        * action[0:3] 是末端本体系平移命令。
         * action[3:6] 是末端本体系旋转命令。
 
     坐标系语义由 TaskSpaceVelocityController 实现；该类只负责外围运行时胶水，

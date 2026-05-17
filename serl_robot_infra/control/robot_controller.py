@@ -8,17 +8,17 @@ from serl_robot_infra.common.async_camera_window import AsyncCameraWindow
 from serl_robot_infra.common.async_writer import AsyncVideoWriter
 from serl_robot_infra.common.config import ProjectConfig
 from serl_robot_infra.common.data_manager import DataManager
-from serl_robot_infra.control.task_space_velocity_controller import (
-    TaskSpaceVelocityController,
-)
-from serl_robot_infra.control.teleop_runtime import TeleopRuntime
+from serl_robot_infra.common.se3_utils import compose_transforms, invert_transform
+from serl_robot_infra.control.nric_torque_controller import NRICTorqueController
+from serl_robot_infra.control.se3_torque_controller import SE3TorqueController
+from serl_robot_infra.control.se3_torque_runtime import SE3TorqueRuntime
 from serl_robot_infra.simulation.mujoco_interface import MujocoInterface
 
 logger = logging.getLogger(__name__)
 
 
 class RobotController:
-    """Franka insertion 的本地 SpaceMouse + velocity teleop 控制器。"""
+    """Franka insertion 的本地 SpaceMouse + torque teleop 控制器。"""
 
     def __init__(self, config: ProjectConfig) -> None:
         logger.info("正在初始化机器人控制器...")
@@ -27,12 +27,14 @@ class RobotController:
         self.data_manager = DataManager()
 
         self.spacemouse: Optional[Any] = None
-        self.teleop_runtime: Optional[TeleopRuntime] = None
+        self.teleop_runtime: Optional[SE3TorqueRuntime] = None
         self.video_writers: List[AsyncVideoWriter] = []
         self.teleop_camera_window: Optional[AsyncCameraWindow] = None
 
         self.reset_button_pressed = False
+        self.reanchor_button_pressed = False
         self.q_home = np.zeros(7, dtype=np.float64)
+        self.tip_to_control_transform = np.eye(4, dtype=np.float64)
 
         self.wall_time_start = 0.0
         self.sim_time_start = 0.0
@@ -40,51 +42,53 @@ class RobotController:
         self.next_frame_sim_time = 0.0
         self.next_log_time = 0.0
 
-        self.task_space_controller = TaskSpaceVelocityController(
+        self.task_space_controller = SE3TorqueController(
+            apparent_inertia=np.asarray(config.teleop.impedance_inertia, dtype=np.float64),
+            lambda_stiffness=np.asarray(config.teleop.impedance_stiffness, dtype=np.float64),
+            physical_damping=np.asarray(config.teleop.impedance_damping, dtype=np.float64),
+            q_nominal=None,
+            nullspace_stiffness=config.teleop.nullspace_stiffness,
+            nullspace_damping=config.teleop.nullspace_damping,
+        )
+        self.nric_controller = NRICTorqueController(
+            nominal_mjcf_path=str(config.model.nominal_mjcf_path),
+            end_effector_frame_name=config.teleop.control_frame_name,
+            time_step=config.sim.debug_control_dt,
+            gravity_z=float(self.mujoco_interface.model.opt.gravity[2]),
+            enabled=config.teleop.enable_nric,
+            q_nominal=None,
+            apparent_inertia=np.asarray(config.teleop.impedance_inertia, dtype=np.float64),
+            lambda_stiffness=np.asarray(config.teleop.impedance_stiffness, dtype=np.float64),
+            physical_damping=np.asarray(config.teleop.impedance_damping, dtype=np.float64),
+            nullspace_stiffness=config.teleop.nullspace_stiffness,
+            nullspace_damping=config.teleop.nullspace_damping,
+            k_gamma=np.asarray(config.teleop.nric_k_gamma, dtype=np.float64),
+            k_p=np.asarray(config.teleop.nric_k_p, dtype=np.float64),
+            k_i=np.asarray(config.teleop.nric_k_i, dtype=np.float64),
+            integral_limit=config.teleop.nric_integral_limit,
+            integral_deadband=config.teleop.nric_integral_deadband,
+            integral_leak_rate=config.teleop.nric_integral_leak_rate,
+            zero_cross_reset_ratio=config.teleop.nric_zero_cross_reset_ratio,
+        )
+        self.teleop_runtime = SE3TorqueRuntime(
+            controller=self.task_space_controller,
+            nric_controller=self.nric_controller,
+            get_control_state=self._get_teleop_control_state,
+            set_joint_torque=self._send_joint_torque_command_to_mujoco,
+            step_simulation=self.mujoco_interface.step,
+            control_dt=config.sim.debug_control_dt,
+            sim_steps_per_control=max(
+                1,
+                int(round(config.sim.debug_control_dt / config.sim.timestep)),
+            ),
+            tip_to_control_transform=self.tip_to_control_transform,
             input_deadzone=config.teleop.spacemouse_deadzone,
             input_filter_alpha=config.teleop.spacemouse_filter_alpha,
             max_reference_linear_velocity=config.teleop.max_reference_linear_velocity,
             max_reference_angular_velocity=config.teleop.max_reference_angular_velocity,
-            pose_error_gain=config.teleop.pose_error_gain,
-            ik_damping=config.teleop.ik_damping,
-            nullspace_gain=config.teleop.nullspace_gain,
-            joint_velocity_limits=np.asarray(
-                config.teleop.joint_velocity_limits,
-                dtype=np.float64,
-            ),
-            joint_limit_margin=config.teleop.joint_limit_margin,
-            lower_position_limits=self.mujoco_interface.arm_joint_lower_limits,
-            upper_position_limits=self.mujoco_interface.arm_joint_upper_limits,
-            enable_admittance=config.teleop.enable_admittance,
-            wrench_filter_alpha=config.teleop.wrench_filter_alpha,
-            force_deadband=np.asarray(config.teleop.force_deadband, dtype=np.float64),
-            torque_deadband=np.asarray(config.teleop.torque_deadband, dtype=np.float64),
-            max_force_world=np.asarray(config.teleop.max_force_world, dtype=np.float64),
-            max_torque_world=np.asarray(config.teleop.max_torque_world, dtype=np.float64),
-            admittance_mass=np.asarray(config.teleop.admittance_mass, dtype=np.float64),
-            admittance_damping=np.asarray(
-                config.teleop.admittance_damping,
-                dtype=np.float64,
-            ),
-            admittance_stiffness=np.asarray(
-                config.teleop.admittance_stiffness,
-                dtype=np.float64,
-            ),
-            max_compliance_linear_offset=config.teleop.max_compliance_linear_offset,
-            max_compliance_angular_offset=config.teleop.max_compliance_angular_offset,
-            max_compliance_linear_velocity=config.teleop.max_compliance_linear_velocity,
-            max_compliance_angular_velocity=config.teleop.max_compliance_angular_velocity,
-            joint_velocity_filter_alpha=config.teleop.joint_velocity_filter_alpha,
-        )
-        self.teleop_runtime = TeleopRuntime(
-            controller=self.task_space_controller,
-            get_control_state=self._get_teleop_control_state,
-            set_joint_velocity=self._send_joint_velocity_command_to_mujoco,
-            step_simulation=self.mujoco_interface.step,
-            control_dt=config.sim.timestep,
-            get_wrench_local=self.mujoco_interface.get_end_effector_wrench_local,
-            tare_wrench=self.mujoco_interface.tare_end_effector_wrench,
-            enable_admittance=config.teleop.enable_admittance,
+            max_reference_linear_offset=config.teleop.max_reference_linear_offset,
+            max_reference_angular_offset=config.teleop.max_reference_angular_offset,
+            use_external_wrench_feedback=config.teleop.use_external_wrench_feedback,
         )
 
     def run_simulation(self) -> None:
@@ -122,10 +126,20 @@ class RobotController:
 
         self.mujoco_interface.reset_to_home_keyframe()
         self.mujoco_interface.forward()
+        self.tip_to_control_transform = compose_transforms(
+            invert_transform(self.mujoco_interface.get_end_effector_transform()),
+            self.mujoco_interface.get_control_frame_transform(),
+        )
+        if self.teleop_runtime is not None:
+            self.teleop_runtime.tip_to_control_transform = (
+                self.tip_to_control_transform.copy()
+            )
         self._reset_loop_timing()
         self.q_home = self.mujoco_interface.get_arm_joint_angles()
+        self.task_space_controller.q_nominal = self.q_home.copy()
 
         self._initialize_spacemouse_mode()
+        self.mujoco_interface.tare_end_effector_wrench()
 
         frame_size = None
         main_video_path = self.config.paths.main_video_path
@@ -176,13 +190,7 @@ class RobotController:
             logger.warning("SpaceMouse 不可用，已回退到零输入 teleop 模式: %s", exc)
 
         self.reset_button_pressed = False
-        if (
-            self.config.teleop.enable_admittance
-            and not self.mujoco_interface.has_end_effector_wrench_sensors()
-        ):
-            raise RuntimeError(
-                "已启用 teleop 导纳柔顺，但当前模型未配置末端 force/torque sensors。"
-            )
+        self.reanchor_button_pressed = False
         self._sync_teleop_reference_to_current_state()
 
     def _cleanup_simulation(self) -> None:
@@ -223,16 +231,21 @@ class RobotController:
     def _execute_simulation_step(self) -> None:
         """读取 SpaceMouse 输入并通过共享 runtime 完成一次控制和仿真步进。"""
         raw_spacemouse_action, buttons = self._read_spacemouse_input()
+        self._handle_spacemouse_reanchor_request(buttons)
         if self._handle_spacemouse_reset_request(buttons):
-            self._send_joint_velocity_command_to_mujoco(np.zeros_like(self.q_home))
-            self.mujoco_interface.step()
+            if self.teleop_runtime is None:
+                raise RuntimeError("Teleop runtime 尚未初始化。")
+            self.teleop_runtime.step(
+                np.zeros(6, dtype=np.float64),
+                dt=self.config.sim.debug_control_dt,
+            )
             return
 
         if self.teleop_runtime is None:
             raise RuntimeError("Teleop runtime 尚未初始化。")
         self.teleop_runtime.step(
             raw_spacemouse_action,
-            dt=self.config.sim.timestep,
+            dt=self.config.sim.debug_control_dt,
         )
 
     def _handle_rendering(self, current_sim_time: float) -> None:
@@ -255,7 +268,7 @@ class RobotController:
         if missing_camera_names:
             raise ValueError(
                 "当前 MuJoCo 模型缺少实时显示所需相机: "
-                f"{missing_camera_names}。请确认使用 velocity 主线模型。"
+                f"{missing_camera_names}。请确认使用 insertion 主线模型。"
             )
 
         self.teleop_camera_window = AsyncCameraWindow(
@@ -351,39 +364,49 @@ class RobotController:
         self.reset_button_pressed = reset_pressed
         return False
 
-    def _get_teleop_control_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """返回共享 teleop runtime 所需的 q、MuJoCo 末端位姿和 LOCAL Jacobian。"""
-        current_q = self.mujoco_interface.get_arm_joint_angles()
-        current_transform = self.mujoco_interface.get_end_effector_transform()
-        jacobian = self.mujoco_interface.get_end_effector_local_jacobian()
-        return current_q, current_transform, jacobian
+    def _handle_spacemouse_reanchor_request(self, buttons: list) -> None:
+        """用右键将 teleop 目标重新锚定到当前真实末端位姿。"""
+        reanchor_pressed = bool(buttons[1]) if len(buttons) > 1 else False
+        if reanchor_pressed and not self.reanchor_button_pressed:
+            self._sync_teleop_reference_to_current_state()
+        self.reanchor_button_pressed = reanchor_pressed
+
+    def _get_teleop_control_state(self) -> Dict[str, np.ndarray]:
+        """返回共享 torque runtime 所需的机器人状态。"""
+        return {
+            "q": self.mujoco_interface.get_arm_joint_angles(),
+            "q_dot": self.mujoco_interface.get_arm_joint_velocities(),
+            "tip_transform": self.mujoco_interface.get_end_effector_transform(),
+            "control_transform": self.mujoco_interface.get_control_frame_transform(),
+            "control_jacobian_body": self.mujoco_interface.get_control_frame_local_jacobian(),
+            "control_twist_body": self.mujoco_interface.get_control_frame_local_twist(),
+            "mass_matrix": self.mujoco_interface.get_arm_mass_matrix(),
+            "bias_forces": self.mujoco_interface.get_arm_bias_forces(),
+            "wrench_body": self._get_control_frame_wrench_body(),
+        }
 
     def _sync_teleop_reference_to_current_state(self) -> None:
         """将 teleop 参考位姿同步到 MuJoCo 当前状态。"""
         self.mujoco_interface.forward()
+        self.mujoco_interface.tare_end_effector_wrench()
         if self.teleop_runtime is None:
             raise RuntimeError("Teleop runtime 尚未初始化。")
         self.teleop_runtime.reset_reference()
 
-    def _send_joint_velocity_command_to_mujoco(
+    def _send_joint_torque_command_to_mujoco(
         self,
-        joint_velocity_command: np.ndarray,
+        joint_torque_command: np.ndarray,
     ) -> None:
-        """将关节速度命令按关节名映射后下发到 MuJoCo。"""
-        joint_velocity = np.asarray(joint_velocity_command, dtype=np.float64)
+        """将关节力矩命令下发到 MuJoCo。"""
+        joint_torque = np.asarray(joint_torque_command, dtype=np.float64)
         expected_shape = (len(self.config.model.arm_joint_names),)
-        if joint_velocity.shape != expected_shape:
+        if joint_torque.shape != expected_shape:
             raise ValueError(
-                "关节速度命令维度错误，"
+                "关节力矩命令维度错误，"
                 f"期望 {expected_shape}，"
-                f"实际 {joint_velocity.shape}"
+                f"实际 {joint_torque.shape}"
             )
+        self.mujoco_interface.set_control(joint_torque)
 
-        joint_velocity_by_name: Dict[str, float] = {
-            joint_name: float(velocity)
-            for joint_name, velocity in zip(
-                self.config.model.arm_joint_names,
-                joint_velocity,
-            )
-        }
-        self.mujoco_interface.set_named_joint_velocity_command(joint_velocity_by_name)
+    def _get_control_frame_wrench_body(self) -> np.ndarray:
+        return self.mujoco_interface.get_end_effector_wrench_local()

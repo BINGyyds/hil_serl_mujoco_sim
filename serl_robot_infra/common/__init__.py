@@ -1,4 +1,14 @@
-__all__ = ["AsyncCameraWindow", "AsyncVideoWriter", "DataManager", "ProjectConfig"]
+from importlib import import_module
+
+
+__all__ = [
+    "AsyncCameraWindow",
+    "AsyncVideoWriter",
+    "DataManager",
+    "ProjectConfig",
+    "se3_gic",
+    "se3_utils",
+]
 
 
 def __getattr__(name):
@@ -18,4 +28,8 @@ def __getattr__(name):
         from serl_robot_infra.common.config import ProjectConfig
 
         return ProjectConfig
+    if name == "se3_gic":
+        return import_module("serl_robot_infra.common.se3_gic")
+    if name == "se3_utils":
+        return import_module("serl_robot_infra.common.se3_utils")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -99,6 +99,9 @@ class MujocoInterface:
             if model_config.base_site_name
             else None
         )
+        self.control_frame_site_id = self.model.site(
+            model_config.control_frame_site_name
+        ).id
         self.end_effector_site_id = self.model.site(
             model_config.end_effector_site_name
         ).id
@@ -224,7 +227,10 @@ class MujocoInterface:
 
         force_local = self._read_sensor(self.end_effector_force_sensor_slice)
         torque_local = self._read_sensor(self.end_effector_torque_sensor_slice)
-        return np.concatenate([force_local, torque_local])
+        # MuJoCo site force/torque sensors report the child-parent interaction
+        # wrench. 控制器需要“环境作用在末端上的外力”，因此这里统一翻转符号，
+        # 与 SE3_impedance 参考实现保持一致。
+        return -np.concatenate([force_local, torque_local])
 
     def tare_end_effector_wrench(self) -> None:
         """将当前末端本体系 6D wrench 设为零偏。"""
@@ -278,6 +284,10 @@ class MujocoInterface:
         """获取配置中末端 site 的当前世界系 4x4 齐次变换矩阵。"""
         return self.get_site_transform()
 
+    def get_control_frame_transform(self) -> np.ndarray:
+        """获取内部 torque 控制 frame 的当前世界系 4x4 齐次变换矩阵。"""
+        return self._get_site_transform_from_data(self.data, self.control_frame_site_id)
+
     def get_end_effector_wrench_world(self) -> np.ndarray:
         """读取减去 tare 偏置后的末端世界系 6D wrench。"""
         wrench_local = self.get_end_effector_wrench_local()
@@ -315,8 +325,16 @@ class MujocoInterface:
     ) -> np.ndarray:
         """返回指定 site 在自身 LOCAL 坐标系下的 6x7 Jacobian。"""
         site_id = self._get_site_id(site_name)
-        transform = self._get_site_transform_from_data(self.data, site_id)
-        jacobian_world = self._get_site_world_jacobian_from_data(self.data, site_id)
+        return self._get_site_local_jacobian_from_data(self.data, site_id)
+
+    def _get_site_local_jacobian_from_data(
+        self,
+        data: mujoco.MjData,
+        site_id: int,
+    ) -> np.ndarray:
+        """返回指定 site 在自身 LOCAL 坐标系下的 6x7 Jacobian。"""
+        transform = self._get_site_transform_from_data(data, site_id)
+        jacobian_world = self._get_site_world_jacobian_from_data(data, site_id)
         world_to_local = np.block(
             [
                 [transform[:3, :3].T, np.zeros((3, 3), dtype=np.float64)],
@@ -328,6 +346,41 @@ class MujocoInterface:
     def get_end_effector_local_jacobian(self) -> np.ndarray:
         """返回配置中末端 site 在自身 LOCAL 坐标系下的 6x7 Jacobian。"""
         return self.get_site_local_jacobian()
+
+    def get_control_frame_local_jacobian(self) -> np.ndarray:
+        """返回内部 torque 控制 frame 在 LOCAL 坐标系下的 6x7 Jacobian。"""
+        return self._get_site_local_jacobian_from_data(
+            self.data,
+            self.control_frame_site_id,
+        )
+
+    def get_site_local_twist(
+        self,
+        site_name: Optional[str] = None,
+    ) -> np.ndarray:
+        """返回指定 site 在 LOCAL 坐标系下的 6D twist。"""
+        site_id = self._get_site_id(site_name)
+        jacobian_local = self._get_site_local_jacobian_from_data(self.data, site_id)
+        qvel = self.data.qvel[self.arm_dof_addrs].copy()
+        return jacobian_local @ qvel
+
+    def get_control_frame_local_twist(self) -> np.ndarray:
+        jacobian_local = self._get_site_local_jacobian_from_data(
+            self.data,
+            self.control_frame_site_id,
+        )
+        qvel = self.data.qvel[self.arm_dof_addrs].copy()
+        return jacobian_local @ qvel
+
+    def get_arm_mass_matrix(self) -> np.ndarray:
+        """返回机械臂 7x7 关节空间质量矩阵。"""
+        full_mass_matrix = np.zeros((self.model.nv, self.model.nv), dtype=np.float64)
+        mujoco.mj_fullM(self.model, full_mass_matrix, self.data.qM)
+        return full_mass_matrix[np.ix_(self.arm_dof_addrs, self.arm_dof_addrs)]
+
+    def get_arm_bias_forces(self) -> np.ndarray:
+        """返回机械臂的 Coriolis/重力等偏置广义力。"""
+        return self.data.qfrc_bias[self.arm_dof_addrs].copy()
 
     def inverse_kinematics_site(
         self,
