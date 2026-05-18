@@ -42,6 +42,14 @@ def maybe_render(env, render_enabled: bool) -> None:
         env.render()
 
 
+def add_obs_horizon(obs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Match learner-side obs_horizon=1 schema without importing train wrappers."""
+    return {
+        key: np.expand_dims(np.asarray(value), axis=0)
+        for key, value in obs.items()
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Record MuJoCo insertion demos with the SpaceMouse."
@@ -133,6 +141,7 @@ def main() -> None:
     proprio_keys = [
         "pose_error_body",
         "twist_body",
+        "wrench_control_body",
     ]
 
     render_mode: Optional[str] = "human" if args.render_human else None
@@ -200,7 +209,17 @@ def main() -> None:
         print("  Teleop camera window enabled.")
     print("-" * 60)
 
-    obs, _ = env.reset()
+    raw_obs, _ = env.reset()
+    obs = add_obs_horizon(raw_obs)
+    expected_state_shape = (1, *env.observation_space["state"].shape)
+    print(f"  proprio_keys: {proprio_keys}")
+    print(f"  Demo observation state shape: {obs['state'].shape}")
+    if obs["state"].shape != expected_state_shape:
+        raise RuntimeError(
+            "Demo observation schema mismatch: "
+            f"expected {expected_state_shape}, got {obs['state'].shape}. "
+            "Refusing to record demos with a schema that does not match learner input."
+        )
     maybe_render(env, args.render_human)
     if camera_window is not None:
         camera_window.reset_timing()
@@ -230,7 +249,8 @@ def main() -> None:
                 print(f"  [INPUT] action={action_text} buttons={buttons}", flush=True)
                 last_debug_print = step_start
 
-            next_obs, reward, done, truncated, info = env.step(action)
+            next_obs_raw, reward, done, truncated, info = env.step(action)
+            next_obs = add_obs_horizon(next_obs_raw)
             maybe_render(env, args.render_human)
             if camera_window is not None:
                 camera_window.render()
@@ -265,7 +285,8 @@ def main() -> None:
                     f"angular_speed={info.get('tcp_angular_speed', 0.0):.4f})"
                 )
                 episode_transitions = []
-                obs, _ = env.reset()
+                raw_obs, _ = env.reset()
+                obs = add_obs_horizon(raw_obs)
                 reanchor_button_pressed = False
                 maybe_render(env, args.render_human)
                 if camera_window is not None:
@@ -283,7 +304,8 @@ def main() -> None:
                     f"angular_speed={info.get('tcp_angular_speed', 0.0):.4f})"
                 )
                 episode_transitions = []
-                obs, _ = env.reset()
+                raw_obs, _ = env.reset()
+                obs = add_obs_horizon(raw_obs)
                 reanchor_button_pressed = False
                 maybe_render(env, args.render_human)
                 if camera_window is not None:

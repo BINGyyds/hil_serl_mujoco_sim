@@ -32,7 +32,7 @@ python scripts/debug/teleop_main.py --allow-missing-spacemouse --show-cameras
 
 ```bash
 python scripts/record_demos_mujoco.py \
-  --output demo_data/insertion_demos.pkl \
+  --output demo_data/insertion_demos_v2.pkl \
   --num_demos 25 \
   --render-human \
   --realtime \
@@ -44,6 +44,13 @@ python scripts/record_demos_mujoco.py \
 - 控制频率 `100 Hz`
 - `sim_timestep=0.001`
 - `n_substeps=10`
+
+`Insertion v2` 之后，demo 会按 learner 需要的 observation schema 保存：
+
+- `pose_error_body`
+- `twist_body`
+- `wrench_control_body`
+- `state.shape == (1, 18)`
 
 录制日志会打印：
 

@@ -51,21 +51,21 @@ class InsertionConfig(FrankaMujocoConfig):
 
     # Reset randomisation around the pre-insert pose.
     reset_pos_noise_low: np.ndarray = field(
-        default_factory=lambda: np.array([-0.01, -0.0015, 0.0])
+        default_factory=lambda: np.array([-0.012, -0.003, 0.0])
     )
     reset_pos_noise_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.01, 0.0015, 0.0])
+        default_factory=lambda: np.array([0.012, 0.003, 0.0])
     )
-    reset_yaw_range: float = 0.08
+    reset_yaw_range: float = 0.12
 
     # Task-case randomisation used for evaluation / transfer testing.
     eval_case_xy_low: np.ndarray = field(
-        default_factory=lambda: np.array([-0.01, -0.0015])
+        default_factory=lambda: np.array([-0.012, -0.003])
     )
     eval_case_xy_high: np.ndarray = field(
-        default_factory=lambda: np.array([0.01, 0.0015])
+        default_factory=lambda: np.array([0.012, 0.003])
     )
-    eval_case_yaw_range: float = 0.08
+    eval_case_yaw_range: float = 0.12
 
     # reset 随机化阶段使用的有界非线性最小二乘 IK。
     reset_ik_max_iters: int = 80
@@ -80,10 +80,16 @@ class InsertionConfig(FrankaMujocoConfig):
     reset_ik_seed_weight: float = 0.01
     reset_ik_center_weight: float = 0.002
 
-    # Reward weights.
+    # Legacy dense reward weights retained for backward-compatible overrides.
     reward_xy_weight: float = 8.0
     reward_z_weight: float = 1.5
     reward_rot_weight: float = 1.2
+    reward_body_pos_weight: float = 1.0
+    reward_body_rot_weight: float = 3.0
+    reward_linear_speed_weight: float = 0.15
+    reward_angular_speed_weight: float = 0.10
+    reward_lateral_force_weight: float = 0.20
+    reward_lateral_torque_weight: float = 0.10
     reward_depth_weight: float = 2.0
     reward_success_bonus: float = 2000.0
     reward_failure_penalty: float = 25.0
@@ -121,6 +127,8 @@ class InsertionConfig(FrankaMujocoConfig):
     max_reference_angular_velocity: float = 0.10
     max_reference_linear_offset: float = 0.01
     max_reference_angular_offset: float = 0.2
+    wrench_force_scale: float = 20.0
+    wrench_torque_scale: float = 1.0
     ik_damping: float = 1e-4
     joint_velocity_limits: Tuple[float, ...] = (
         2.175,
@@ -144,8 +152,8 @@ class InsertionConfig(FrankaMujocoConfig):
         1.0,
         1.0,
     )
-    nullspace_stiffness: float = 0.0
-    nullspace_damping: float = 0.0
+    nullspace_stiffness: float = 10.0
+    nullspace_damping: float = 2.0
     nric_k_gamma: Tuple[float, ...] = (2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0)
     nric_k_p: Tuple[float, ...] = (5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0)
     nric_k_i: Tuple[float, ...] = (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
@@ -208,6 +216,9 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         )
         state_spaces["twist_body"] = spaces.Box(
             -np.inf, np.inf, shape=(6,), dtype=np.float64
+        )
+        state_spaces["wrench_control_body"] = spaces.Box(
+            -1.0, 1.0, shape=(6,), dtype=np.float64
         )
         self.observation_space = spaces.Dict(
             {"state": spaces.Dict(state_spaces)}
@@ -342,6 +353,7 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             tip_rot=tip_rot,
         )
         twist_body = self._get_ee_body_twist()
+        wrench_control_body = self._get_normalized_control_frame_wrench()
         _, _, _, insertion_depth = self._compute_goal_frame_errors(
             tip_pos=tip_pos,
             tip_rot=tip_rot,
@@ -353,11 +365,25 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         obs["state"]["controller_target_pose"] = self._get_controller_target_pose()
         obs["state"]["pose_error_body"] = pose_error_body
         obs["state"]["twist_body"] = twist_body
+        obs["state"]["wrench_control_body"] = wrench_control_body
         return obs
 
     def _compute_reward(self, obs: Dict) -> float:
         tip_pos, tip_rot = self._get_ee_pose()
         cfg = self.insertion_cfg
+        pose_error_body = np.asarray(obs["state"]["pose_error_body"], dtype=np.float64)
+        twist_body = np.asarray(obs["state"]["twist_body"], dtype=np.float64)
+        wrench_control_body = np.asarray(
+            obs["state"]["wrench_control_body"],
+            dtype=np.float64,
+        )
+
+        e_p = float(np.linalg.norm(pose_error_body[:3]))
+        e_r = float(np.linalg.norm(pose_error_body[3:]))
+        v_lin = float(np.linalg.norm(twist_body[:3]))
+        v_ang = float(np.linalg.norm(twist_body[3:]))
+        f_lat = float(np.linalg.norm(wrench_control_body[:2]))
+        tau_lat = float(np.linalg.norm(wrench_control_body[3:5]))
 
         xy_error, z_gap, rot_error, _ = self._compute_goal_frame_errors(
             tip_pos=tip_pos,
@@ -376,9 +402,12 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             depth_reward = 0.0
 
         reward = (
-            -cfg.reward_xy_weight * xy_error
-            - cfg.reward_z_weight * z_gap
-            - cfg.reward_rot_weight * rot_error
+            - cfg.reward_body_pos_weight * e_p
+            - cfg.reward_body_rot_weight * e_r
+            - cfg.reward_linear_speed_weight * v_lin
+            - cfg.reward_angular_speed_weight * v_ang
+            - cfg.reward_lateral_force_weight * f_lat
+            - cfg.reward_lateral_torque_weight * tau_lat
             + depth_reward
             - cfg.reward_step_penalty
         )
@@ -397,12 +426,21 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
     def _get_info(self, obs: Dict) -> Dict[str, Any]:
         tip_pos, tip_rot = self._get_ee_pose()
         tip_lin_vel, tip_ang_vel = self._get_ee_velocity()
+        pose_error_body = np.asarray(obs["state"]["pose_error_body"], dtype=np.float64)
+        wrench_control_body = np.asarray(
+            obs["state"]["wrench_control_body"],
+            dtype=np.float64,
+        )
         xy_error, z_gap, rot_error, insertion_depth = self._compute_goal_frame_errors(
             tip_pos=tip_pos,
             tip_rot=tip_rot,
         )
         linear_speed = float(np.linalg.norm(tip_lin_vel))
         angular_speed = float(np.linalg.norm(tip_ang_vel))
+        body_pos_error = float(np.linalg.norm(pose_error_body[:3]))
+        body_rot_error = float(np.linalg.norm(pose_error_body[3:]))
+        wrench_lateral_force = float(np.linalg.norm(wrench_control_body[:2]))
+        wrench_lateral_torque = float(np.linalg.norm(wrench_control_body[3:5]))
         success = self._is_success(tip_pos, tip_rot)
         failure = self._is_failure(tip_pos)
 
@@ -410,6 +448,10 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             "xy_error": xy_error,
             "z_gap": z_gap,
             "rot_error": rot_error,
+            "body_pos_error": body_pos_error,
+            "body_rot_error": body_rot_error,
+            "wrench_lateral_force": wrench_lateral_force,
+            "wrench_lateral_torque": wrench_lateral_torque,
             "tcp_linear_speed": linear_speed,
             "tcp_angular_speed": angular_speed,
             "insertion_depth": insertion_depth,
@@ -583,6 +625,14 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
     def _get_control_frame_wrench(self) -> np.ndarray:
         return self._get_control_wrench_local()
+
+    def _get_normalized_control_frame_wrench(self) -> np.ndarray:
+        wrench_control_body = self._get_control_frame_wrench().astype(np.float64, copy=True)
+        force_scale = max(float(self.insertion_cfg.wrench_force_scale), 1e-6)
+        torque_scale = max(float(self.insertion_cfg.wrench_torque_scale), 1e-6)
+        wrench_control_body[:3] /= force_scale
+        wrench_control_body[3:] /= torque_scale
+        return np.clip(wrench_control_body, -1.0, 1.0)
 
     def _get_teleop_control_state(self) -> Dict[str, np.ndarray]:
         return {
