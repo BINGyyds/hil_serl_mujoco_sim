@@ -25,7 +25,10 @@ if __package__ in (None, ""):
 
 from serl_robot_infra.common.async_camera_window import AsyncCameraWindow
 from serl_robot_infra.common.config import VisualizationConfig
-from serl_robot_infra.configs.insertion_config import make_insertion_config
+from serl_robot_infra.configs.insertion_config import (
+    build_reset_perturbation_overrides,
+    make_insertion_config,
+)
 from serl_robot_infra.envs.franka_insertion_env import FrankaInsertionEnv
 from serl_robot_infra.envs.wrappers import MujocoSERLObsWrapper
 from serl_robot_infra.spacemouse.spacemouse_expert import SpaceMouseExpert
@@ -106,6 +109,19 @@ def main() -> None:
         help="恢复训练用 reset 随机扰动；默认关闭，使录制起点与 debug teleop home 一致。",
     )
     parser.add_argument(
+        "--reset_perturbation_preset",
+        choices=["default", "yaw_only"],
+        default=None,
+        help="可选 reset 预设。`yaw_only` 表示只随机 peg 初始 yaw。"
+        " 如果不传，则保留现有 `--random-reset` 语义。",
+    )
+    parser.add_argument(
+        "--reset_yaw_range_override",
+        type=float,
+        default=None,
+        help="可选 reset yaw range override，例如 0.2。",
+    )
+    parser.add_argument(
         "--control-hz",
         type=float,
         default=100.0,
@@ -159,7 +175,14 @@ def main() -> None:
         n_substeps=n_substeps,
         control_dt=control_dt,
     )
-    if not args.random_reset:
+    if args.reset_perturbation_preset is not None or args.reset_yaw_range_override is not None:
+        config_overrides.update(
+            build_reset_perturbation_overrides(
+                preset=args.reset_perturbation_preset or "default",
+                yaw_range_override=args.reset_yaw_range_override,
+            )
+        )
+    elif not args.random_reset:
         config_overrides.update(
             reset_pos_noise_low=np.zeros(3, dtype=np.float64),
             reset_pos_noise_high=np.zeros(3, dtype=np.float64),
@@ -200,7 +223,14 @@ def main() -> None:
         f"sim_timestep={raw_env.cfg.sim_timestep:.4f}s, "
         f"n_substeps={raw_env.cfg.n_substeps})"
     )
-    print(f"  Random reset: {args.random_reset}")
+    if args.reset_perturbation_preset is not None or args.reset_yaw_range_override is not None:
+        print(
+            "  Reset preset: "
+            f"{args.reset_perturbation_preset or 'default'} "
+            f"(yaw_range={raw_env.cfg.reset_yaw_range:.3f})"
+        )
+    else:
+        print(f"  Random reset: {args.random_reset}")
     if args.render_human:
         print("  Human viewer enabled.")
     else:

@@ -3,12 +3,81 @@ Configuration helpers for the MuJoCo Franka insertion task.
 """
 
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
 from serl_robot_infra.envs.franka_insertion_env import InsertionConfig
 
 _MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "franka_panda"
+
+DEFAULT_RESET_POS_NOISE_LOW = np.array([-0.012, -0.003, 0.0], dtype=np.float64)
+DEFAULT_RESET_POS_NOISE_HIGH = np.array([0.012, 0.003, 0.0], dtype=np.float64)
+DEFAULT_RESET_YAW_RANGE = 0.12
+DEFAULT_EVAL_CASE_XY_LOW = np.array([-0.012, -0.003], dtype=np.float64)
+DEFAULT_EVAL_CASE_XY_HIGH = np.array([0.012, 0.003], dtype=np.float64)
+DEFAULT_EVAL_CASE_YAW_RANGE = 0.12
+WIDE_EVAL_CASE_XY_LOW = np.array([-0.01, -0.01], dtype=np.float64)
+WIDE_EVAL_CASE_XY_HIGH = np.array([0.01, 0.01], dtype=np.float64)
+WIDE_EVAL_CASE_YAW_RANGE = 0.25
+
+
+def build_reset_perturbation_overrides(
+    *,
+    preset: str = "default",
+    yaw_range_override: Optional[float] = None,
+    zero_reset_perturbation: bool = False,
+) -> dict:
+    """Return config overrides for reset perturbation presets."""
+    if zero_reset_perturbation:
+        return {
+            "reset_pos_noise_low": np.zeros(3, dtype=np.float64),
+            "reset_pos_noise_high": np.zeros(3, dtype=np.float64),
+            "reset_yaw_range": 0.0,
+        }
+
+    overrides: dict = {}
+    if preset == "yaw_only":
+        overrides.update(
+            reset_pos_noise_low=np.zeros(3, dtype=np.float64),
+            reset_pos_noise_high=np.zeros(3, dtype=np.float64),
+        )
+    elif preset != "default":
+        raise ValueError(f"Unknown reset perturbation preset: {preset}")
+
+    if yaw_range_override is not None:
+        overrides["reset_yaw_range"] = float(yaw_range_override)
+
+    return overrides
+
+
+def build_eval_task_case_overrides(
+    *,
+    preset: str = "aligned",
+    yaw_range_override: Optional[float] = None,
+) -> dict:
+    """Return config overrides for eval task-case presets."""
+    overrides: dict = {}
+    if preset == "aligned":
+        pass
+    elif preset == "wide":
+        overrides.update(
+            eval_case_xy_low=WIDE_EVAL_CASE_XY_LOW.copy(),
+            eval_case_xy_high=WIDE_EVAL_CASE_XY_HIGH.copy(),
+            eval_case_yaw_range=WIDE_EVAL_CASE_YAW_RANGE,
+        )
+    elif preset == "yaw_only":
+        overrides.update(
+            eval_case_xy_low=np.zeros(2, dtype=np.float64),
+            eval_case_xy_high=np.zeros(2, dtype=np.float64),
+        )
+    else:
+        raise ValueError(f"Unknown eval task-case preset: {preset}")
+
+    if yaw_range_override is not None:
+        overrides["eval_case_yaw_range"] = float(yaw_range_override)
+
+    return overrides
 
 
 def make_insertion_config(**overrides) -> InsertionConfig:
@@ -32,12 +101,12 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         pos_action_scale=0.02,
         rot_action_scale=0.08,
 
-        reset_pos_noise_low=np.array([-0.012, -0.003, 0.0]),
-        reset_pos_noise_high=np.array([0.012, 0.003, 0.0]),
-        reset_yaw_range=0.12,
-        eval_case_xy_low=np.array([-0.012, -0.003]),
-        eval_case_xy_high=np.array([0.012, 0.003]),
-        eval_case_yaw_range=0.12,
+        reset_pos_noise_low=DEFAULT_RESET_POS_NOISE_LOW.copy(),
+        reset_pos_noise_high=DEFAULT_RESET_POS_NOISE_HIGH.copy(),
+        reset_yaw_range=DEFAULT_RESET_YAW_RANGE,
+        eval_case_xy_low=DEFAULT_EVAL_CASE_XY_LOW.copy(),
+        eval_case_xy_high=DEFAULT_EVAL_CASE_XY_HIGH.copy(),
+        eval_case_yaw_range=DEFAULT_EVAL_CASE_YAW_RANGE,
         reset_ik_max_iters=80,
         reset_ik_tolerance=1e-4,
         reset_ik_position_tolerance=1e-4,
