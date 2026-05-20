@@ -32,8 +32,9 @@ python scripts/debug/teleop_main.py --allow-missing-spacemouse --show-cameras
 
 ```bash
 python scripts/record_demos_mujoco.py \
-  --output demo_data/insertion_demos_v2.pkl \
-  --num_demos 25 \
+  --output demo_data/insertion_demos.pkl \
+  --num_demos 20 \
+  --random-reset \
   --render-human \
   --realtime \
   --show-cameras
@@ -45,12 +46,14 @@ python scripts/record_demos_mujoco.py \
 - `sim_timestep=0.001`
 - `n_substeps=10`
 
-`Insertion v2` 之后，demo 会按 learner 需要的 observation schema 保存：
+当前推荐的 `--proprio_preset wrench` demo schema 为：
 
 - `pose_error_body`
 - `twist_body`
 - `wrench_control_body`
 - `state.shape == (1, 18)`
+
+如果显式使用 `--proprio_preset wrench_joint`，会额外保存 `q_pos/q_vel`，`state.shape == (1, 32)`。该分支目前仅作为诊断实验保留。
 
 录制日志会打印：
 

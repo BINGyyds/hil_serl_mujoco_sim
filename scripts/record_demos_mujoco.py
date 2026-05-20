@@ -27,6 +27,7 @@ from serl_robot_infra.common.async_camera_window import AsyncCameraWindow
 from serl_robot_infra.common.config import VisualizationConfig
 from serl_robot_infra.configs.insertion_config import (
     build_reset_perturbation_overrides,
+    get_proprio_keys,
     make_insertion_config,
 )
 from serl_robot_infra.envs.franka_insertion_env import FrankaInsertionEnv
@@ -150,15 +151,18 @@ def main() -> None:
         default=0.5,
         help="--debug-spacemouse 的打印间隔秒数。",
     )
+    parser.add_argument(
+        "--proprio_preset",
+        choices=["wrench", "wrench_joint"],
+        default="wrench",
+        help="Policy/demo observation preset. `wrench` is 18D; "
+        "`wrench_joint` adds q_pos/q_vel for 32D.",
+    )
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
-    proprio_keys = [
-        "pose_error_body",
-        "twist_body",
-        "wrench_control_body",
-    ]
+    proprio_keys = get_proprio_keys(args.proprio_preset)
 
     render_mode: Optional[str] = "human" if args.render_human else None
     if args.control_hz <= 0.0:
@@ -217,6 +221,7 @@ def main() -> None:
     print("  RIGHT button = re-anchor teleop target | LEFT button = discard/reset")
     print(f"  Max episode steps: {args.max_episode_steps}")
     print(f"  Action scale: {args.action_scale}")
+    print(f"  Proprio preset: {args.proprio_preset}")
     print(
         f"  Control rate: {1.0 / raw_env.cfg.control_dt:.1f} Hz "
         f"(dt={raw_env.cfg.control_dt:.4f}s, "

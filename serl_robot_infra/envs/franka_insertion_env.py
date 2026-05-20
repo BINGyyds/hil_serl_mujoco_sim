@@ -66,6 +66,7 @@ class InsertionConfig(FrankaMujocoConfig):
         default_factory=lambda: np.array([0.012, 0.003])
     )
     eval_case_yaw_range: float = 0.12
+    task_case_moves_reset_anchor: bool = False
 
     # reset 随机化阶段使用的有界非线性最小二乘 IK。
     reset_ik_max_iters: int = 80
@@ -277,6 +278,8 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
 
         self._preinsert_tip_pos, self._default_goal_tip_rot = self._get_ee_pose()
         self._socket_pos, self._socket_rot = self._get_socket_pose()
+        _, default_task_rot = self._get_task_frame_pose()
+        self._default_task_to_goal_rot = default_task_rot.T @ self._default_goal_tip_rot
         self._default_goal_tip_transform = make_transform(
             rotation=self._default_goal_tip_rot,
             translation=self._socket_pos,
@@ -489,7 +492,7 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             cfg.workspace_high,
         )
         target_tip_rot = (
-            self._goal_tip_transform[:3, :3]
+            self._preinsert_tip_transform[:3, :3]
             @ Rotation.from_euler("z", yaw_noise).as_matrix()
         )
         return target_tip_pos, target_tip_rot
@@ -759,18 +762,19 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         )
         mujoco.mj_forward(self.model, self.data)
 
-        task_pos, _ = self._get_task_frame_pose()
-        goal_rotation = self._default_goal_tip_rot @ exp_so3(
-            np.array([0.0, 0.0, yaw_offset], dtype=np.float64)
-        )
+        task_pos, task_rot = self._get_task_frame_pose()
+        goal_rotation = task_rot @ self._default_task_to_goal_rot
         self._goal_tip_transform = make_transform(
             rotation=goal_rotation,
             translation=task_pos,
         )
-        self._preinsert_tip_transform = compose_transforms(
-            self._goal_tip_transform,
-            self._default_preinsert_from_goal,
-        )
+        if self.insertion_cfg.task_case_moves_reset_anchor:
+            self._preinsert_tip_transform = compose_transforms(
+                self._goal_tip_transform,
+                self._default_preinsert_from_goal,
+            )
+        else:
+            self._preinsert_tip_transform = self._default_preinsert_tip_transform.copy()
         self._current_task_case_xy = np.asarray(xy_offset, dtype=np.float64).reshape((2,))
         self._current_task_case_yaw = float(yaw_offset)
         self._update_task_geometry_state()

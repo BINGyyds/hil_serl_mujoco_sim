@@ -20,6 +20,30 @@ DEFAULT_EVAL_CASE_YAW_RANGE = 0.12
 WIDE_EVAL_CASE_XY_LOW = np.array([-0.01, -0.01], dtype=np.float64)
 WIDE_EVAL_CASE_XY_HIGH = np.array([0.01, 0.01], dtype=np.float64)
 WIDE_EVAL_CASE_YAW_RANGE = 0.25
+PROPRIO_PRESETS = {
+    "wrench": (
+        "pose_error_body",
+        "twist_body",
+        "wrench_control_body",
+    ),
+    "wrench_joint": (
+        "pose_error_body",
+        "twist_body",
+        "wrench_control_body",
+        "q_pos",
+        "q_vel",
+    ),
+}
+
+
+def get_proprio_keys(preset: str = "wrench") -> list[str]:
+    """Return policy observation keys for a named insertion proprio preset."""
+    if preset not in PROPRIO_PRESETS:
+        raise ValueError(
+            f"Unknown proprio preset: {preset}. "
+            f"Expected one of {sorted(PROPRIO_PRESETS)}."
+        )
+    return list(PROPRIO_PRESETS[preset])
 
 
 def build_reset_perturbation_overrides(
@@ -54,6 +78,7 @@ def build_reset_perturbation_overrides(
 def build_eval_task_case_overrides(
     *,
     preset: str = "aligned",
+    xy_range_override: Optional[float] = None,
     yaw_range_override: Optional[float] = None,
 ) -> dict:
     """Return config overrides for eval task-case presets."""
@@ -73,6 +98,13 @@ def build_eval_task_case_overrides(
         )
     else:
         raise ValueError(f"Unknown eval task-case preset: {preset}")
+
+    if xy_range_override is not None:
+        xy_range = float(xy_range_override)
+        if xy_range < 0.0:
+            raise ValueError(f"xy_range_override must be non-negative, got {xy_range}")
+        overrides["eval_case_xy_low"] = np.array([-xy_range, -xy_range], dtype=np.float64)
+        overrides["eval_case_xy_high"] = np.array([xy_range, xy_range], dtype=np.float64)
 
     if yaw_range_override is not None:
         overrides["eval_case_yaw_range"] = float(yaw_range_override)
@@ -107,6 +139,7 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         eval_case_xy_low=DEFAULT_EVAL_CASE_XY_LOW.copy(),
         eval_case_xy_high=DEFAULT_EVAL_CASE_XY_HIGH.copy(),
         eval_case_yaw_range=DEFAULT_EVAL_CASE_YAW_RANGE,
+        task_case_moves_reset_anchor=False,
         reset_ik_max_iters=80,
         reset_ik_tolerance=1e-4,
         reset_ik_position_tolerance=1e-4,
