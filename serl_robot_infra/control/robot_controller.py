@@ -89,6 +89,10 @@ class RobotController:
             max_reference_linear_offset=config.teleop.max_reference_linear_offset,
             max_reference_angular_offset=config.teleop.max_reference_angular_offset,
             use_external_wrench_feedback=config.teleop.use_external_wrench_feedback,
+            # In manual controller debugging, keep the compliant equilibrium at
+            # the reset/re-anchor pose instead of letting contact motion drag the
+            # reference along with the current end-effector pose.
+            project_reference_to_current=False,
         )
 
     def run_simulation(self) -> None:

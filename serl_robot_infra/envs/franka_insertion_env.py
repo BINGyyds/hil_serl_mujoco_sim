@@ -66,7 +66,6 @@ class InsertionConfig(FrankaMujocoConfig):
         default_factory=lambda: np.array([0.012, 0.003])
     )
     eval_case_yaw_range: float = 0.12
-    task_case_moves_reset_anchor: bool = False
 
     # reset 随机化阶段使用的有界非线性最小二乘 IK。
     reset_ik_max_iters: int = 80
@@ -686,6 +685,13 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         target_quat = Rotation.from_matrix(target_transform[:3, :3]).as_quat()
         return np.concatenate([target_transform[:3, 3], target_quat])
 
+    def set_controller_target_to_goal_tip(self) -> None:
+        """Set the impedance target directly to the current goal tip pose."""
+        controller_state = self._teleop_runtime.get_internal_state()
+        controller_state["target_tip_transform"] = self._goal_tip_transform.copy()
+        controller_state["filtered_command"] = np.zeros(6, dtype=np.float64)
+        self._teleop_runtime.set_internal_state(controller_state)
+
     def _compute_rotation_error(self, tip_rot: np.ndarray) -> float:
         rotation_delta = self._goal_tip_transform[:3, :3].T @ tip_rot
         return float(np.linalg.norm(log_so3(rotation_delta)))
@@ -768,13 +774,7 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             rotation=goal_rotation,
             translation=task_pos,
         )
-        if self.insertion_cfg.task_case_moves_reset_anchor:
-            self._preinsert_tip_transform = compose_transforms(
-                self._goal_tip_transform,
-                self._default_preinsert_from_goal,
-            )
-        else:
-            self._preinsert_tip_transform = self._default_preinsert_tip_transform.copy()
+        self._preinsert_tip_transform = self._default_preinsert_tip_transform.copy()
         self._current_task_case_xy = np.asarray(xy_offset, dtype=np.float64).reshape((2,))
         self._current_task_case_yaw = float(yaw_offset)
         self._update_task_geometry_state()
@@ -859,10 +859,13 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
             "step_count": int(self._step_count),
             "task_case_xy": self._current_task_case_xy.copy(),
             "task_case_yaw": float(self._current_task_case_yaw),
+            "reset_case_pos_noise": self._current_reset_case_pos_noise.copy(),
+            "reset_case_yaw": float(self._current_reset_case_yaw),
             "goal_tip_transform": self._goal_tip_transform.copy(),
             "preinsert_tip_transform": self._preinsert_tip_transform.copy(),
             "tip_transform": tip_transform,
             "twist_body": self._get_ee_body_twist().copy(),
+            "control_wrench_bias_local": self._control_wrench_bias_local.copy(),
             "controller_state": self._teleop_runtime.get_internal_state(),
         }
 
@@ -880,7 +883,19 @@ class FrankaInsertionEnv(FrankaMujocoEnv):
         self.data.qvel[:] = np.asarray(snapshot["qvel"], dtype=np.float64)
         self.data.ctrl[:] = np.asarray(snapshot["ctrl"], dtype=np.float64)
         self._step_count = int(snapshot["step_count"])
+        if "reset_case_pos_noise" in snapshot:
+            self._current_reset_case_pos_noise = np.asarray(
+                snapshot["reset_case_pos_noise"],
+                dtype=np.float64,
+            ).copy()
+        if "reset_case_yaw" in snapshot:
+            self._current_reset_case_yaw = float(snapshot["reset_case_yaw"])
         mujoco.mj_forward(self.model, self.data)
+        if "control_wrench_bias_local" in snapshot:
+            self._control_wrench_bias_local = np.asarray(
+                snapshot["control_wrench_bias_local"],
+                dtype=np.float64,
+            ).copy()
         self._teleop_runtime.set_internal_state(snapshot["controller_state"])
 
     def restore_transformed_diagnostic_snapshot(

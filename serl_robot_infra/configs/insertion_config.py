@@ -139,7 +139,6 @@ def make_insertion_config(**overrides) -> InsertionConfig:
         eval_case_xy_low=DEFAULT_EVAL_CASE_XY_LOW.copy(),
         eval_case_xy_high=DEFAULT_EVAL_CASE_XY_HIGH.copy(),
         eval_case_yaw_range=DEFAULT_EVAL_CASE_YAW_RANGE,
-        task_case_moves_reset_anchor=False,
         reset_ik_max_iters=80,
         reset_ik_tolerance=1e-4,
         reset_ik_position_tolerance=1e-4,

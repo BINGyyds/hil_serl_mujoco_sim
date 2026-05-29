@@ -53,6 +53,7 @@ class SE3TorqueRuntime:
         max_reference_linear_offset: float,
         max_reference_angular_offset: float,
         use_external_wrench_feedback: bool = False,
+        project_reference_to_current: bool = True,
     ) -> None:
         self.controller = controller
         self.nric_controller = nric_controller
@@ -75,6 +76,7 @@ class SE3TorqueRuntime:
             float(max_reference_angular_offset),
         )
         self.use_external_wrench_feedback = bool(use_external_wrench_feedback)
+        self.project_reference_to_current = bool(project_reference_to_current)
         self.filtered_command = np.zeros(6, dtype=np.float64)
         self.target_tip_transform: Optional[np.ndarray] = None
 
@@ -127,7 +129,8 @@ class SE3TorqueRuntime:
 
         filtered_command = self._filter_input(np.asarray(action, dtype=np.float64).reshape((6,)))
         self._integrate_target_tip_transform(filtered_command, dt=self.control_dt if dt is None else float(dt))
-        self._project_target_tip_transform(state["tip_transform"])
+        if self.project_reference_to_current:
+            self._project_target_tip_transform(state["tip_transform"])
         desired_control_transform = compose_transforms(
             self.target_tip_transform,
             self.tip_to_control_transform,
